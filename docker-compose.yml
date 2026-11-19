@@ -180,6 +180,53 @@ services:
         ipv4_address: 172.28.0.64
         aliases: [pg-america-replica.global.local]
 
+  # ---------------- Application services ----------------
+  auth:
+    build:
+      context: .
+      dockerfile: services/auth/Dockerfile
+    container_name: auth
+    hostname: auth
+    environment:
+      AUTH_DB_DSN: "host=pg-core.global.local dbname=auth user=auth_svc password=${AUTH_DB_PASSWORD:-auth-pass} sslmode=verify-full sslrootcert=/certs/ca.crt"
+      API_URLS: "https://api-1.global.local:8000,https://api-2.global.local:8000"
+    volumes:
+      - ./infra/certs:/certs:ro
+      # Only auth gets the RS256 private key and the AES data key.
+      - ./infra/keys/private/auth-rs256.pem:/keys/private/auth-rs256.pem:ro
+      - ./infra/keys/private/auth-data.key:/keys/private/auth-data.key:ro
+      - audit:/audit
+    depends_on:
+      nfs: { condition: service_healthy }
+      pg-core: { condition: service_healthy }
+    networks:
+      globalnet:
+        ipv4_address: 172.28.0.20
+        aliases: [auth.global.local]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import ssl,urllib.request; urllib.request.urlopen('https://auth.global.local:8010/health', context=ssl.create_default_context(cafile='/certs/ca.crt'), timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: nginx
+    hostname: nginx
+    ports:
+      - "443:443"            # the only port published on the host
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infra/certs:/certs:ro
+    depends_on:
+      auth: { condition: service_healthy }
+    networks:
+      globalnet:
+        ipv4_address: 172.28.0.10
+        aliases: [nginx.global.local]
+    restart: unless-stopped
+
   # psql client on globalnet (profile "tools"): used by seed.sh and the tests.
   # Usage: docker compose run --rm -T pgclient "<conninfo>" -c "SELECT 1"
   pgclient:

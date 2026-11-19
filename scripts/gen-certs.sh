@@ -29,8 +29,11 @@ if [[ -f "$OUT/ca.key" && "${1:-}" != "--force" ]]; then
 else
   echo "[gen-certs] A criar a CA local (Global Scale Local CA)..."
   openssl genrsa -out "$OUT/ca.key" 4096 2>/dev/null
+  # RFC 5280 CA extensions (strict verifiers, e.g. Python 3.13+, require keyUsage on the CA).
   openssl req -x509 -new -key "$OUT/ca.key" -sha256 -days 825 \
     -subj "/C=MZ/O=Global Scale Corporation/CN=Global Scale Local CA" \
+    -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+    -addext "keyUsage=critical,keyCertSign,cRLSign" \
     -out "$OUT/ca.crt"
 fi
 
@@ -44,11 +47,17 @@ for entry in "${SERVICES[@]}"; do
     -subj "/C=MZ/O=Global Scale Corporation/CN=$name.global.local" \
     -out "$OUT/$name.csr"
 
+  san="DNS:$name, DNS:$name.global.local, IP:$ip"
+  # nginx is also reached from the host (curl https://localhost), so it needs these names too.
+  [[ "$name" == "nginx" ]] && san="$san, DNS:localhost, IP:127.0.0.1"
+
   cat > "$OUT/$name.ext" <<EOF
 basicConstraints = CA:FALSE
 keyUsage = critical, digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth, clientAuth
-subjectAltName = DNS:$name, DNS:$name.global.local, IP:$ip
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer
+subjectAltName = $san
 EOF
 
   openssl x509 -req -in "$OUT/$name.csr" -CA "$OUT/ca.crt" -CAkey "$OUT/ca.key" \

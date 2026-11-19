@@ -14,7 +14,10 @@ COMPOSE = ["docker", "compose", "--profile", "nfs-test"]
 @pytest.fixture(scope="module")
 def nfs_run():
     run(["docker", "compose", "up", "-d", "--wait", "nfs"])
-    run(["docker", "compose", "exec", "-T", "nfs", "rm", "-rf", "/audit/phase0"])
+    # Clean up THROUGH an NFS client. Deleting directly on the server (behind Ganesha's
+    # back) leaves stale entries in the clients' cache while other containers keep the
+    # volume mounted.
+    run(COMPOSE + ["run", "--rm", "--no-deps", "nfs-test-a", "rm", "-rf", "/audit/phase0"])
     run(COMPOSE + ["rm", "-f", "-s", "nfs-test-a", "nfs-test-b"])
     run(COMPOSE + ["up", "-d", "nfs-test-a", "nfs-test-b"])
     codes = run(["docker", "wait", "gss-nfs-test-a-1", "gss-nfs-test-b-1"]).stdout.split()

@@ -29,3 +29,9 @@
 - Namespaces de rede: cada contentor tem a sua pilha TCP/IP, o seu IP fixo e DNS (`*.global.local`) resolvido pelo DNS interno do Docker.
 - Volumes: o daemon monta o NFS e entrega-o ao contentor (transparência de localização também para o *deploy*).
 - Honestidade técnica: em Docker Desktop todos os contentores correm na mesma VM, por isso é uma **simulação** de nós separados (todos os mounts têm `clientaddr=172.28.0.1`).
+
+## Lição prática: coerência de cache (Fase 2)
+
+- Um teste apagava `/audit/phase0` **diretamente no servidor**, por fora do NFS. Com outro contentor (`auth`) a manter o volume montado, o cliente NFS (partilhado na VM do Docker) manteve a entrada do diretório em cache. A execução seguinte recebia `ENOENT` ao criar ficheiros lá dentro.
+- Explicação: o cliente NFS guarda atributos e entradas de diretório em cache durante alguns segundos (`acdirmin`/`acdirmax`). A coerência só é garantida para operações que passam pelo protocolo (close-to-open).
+- Correção: a limpeza passa a ser feita por um cliente NFS. Mostra porque é que, num DFS, toda a escrita tem de passar pela camada distribuída.

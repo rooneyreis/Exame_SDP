@@ -2,7 +2,7 @@
 
 Plataforma distribuída de transações financeiras internacionais (Exame Prático de Sistemas Distribuídos e Paralelos — ISUTC, LECC 31).
 
-> Em construção, por fases. Estado atual: **Fase 1 — PostgreSQL** concluída.
+> Em construção, por fases. Estado atual: **Fase 2 — Auth** concluída.
 
 ## Requisitos
 
@@ -15,8 +15,8 @@ Plataforma distribuída de transações financeiras internacionais (Exame Práti
 ```bash
 ./scripts/gen-certs.sh   # CA local + certificado TLS por serviço (infra/certs, não versionado)
 ./scripts/gen-keys.sh    # RS256 (JWT), Ed25519 (assinaturas), AES-256 (dados em repouso) — infra/keys
-docker compose up -d     # NFS + 5 nós PostgreSQL
-./scripts/seed.sh        # taxas de câmbio + 3 contas por shard
+docker compose up -d     # NFS, 5 nós PostgreSQL, auth, nginx
+./scripts/seed.sh        # câmbios, 3 contas por shard, staff e 6 clientes
 make test                # suite de testes (unitários + integração)
 ```
 
@@ -75,7 +75,47 @@ docker start pg-europa       # volta sozinho como réplica do novo primário
 
 Os serviços ligam-se com conninfo multi-host (`host=pg-europa.global.local,pg-europa-replica.global.local target_session_attrs=read-write`): depois da promoção, as novas ligações vão para o novo primário sem mudar configuração. As **transações preparadas** (fase 1 do 2PC) estão no WAL, por isso aparecem em `pg_prepared_xacts` no nó promovido e o coordenador pode concluí-las lá. Na réplica em standby só ficam visíveis depois da promoção.
 
+## Autenticação (serviço `auth`)
+
+Acesso pelo Nginx: `https://localhost` (a CA local valida o certificado: `curl --cacert infra/certs/ca.crt`).
+
+| Método | Endpoint | Quem |
+|---|---|---|
+| POST | `/auth/register` | público → `PENDENTE_VERIFICACAO` |
+| POST | `/auth/login` | público → `access_token` (JWT RS256, 15 min) + `refresh_token` (7 dias) |
+| POST | `/auth/refresh` | público: roda o refresh token |
+| POST | `/auth/logout` | autenticado |
+| GET | `/.well-known/jwks.json` | público: chave pública RS256 |
+| GET | `/admin/users?status=…`, `/admin/users/{id}` | operador, admin (o detalhe decifra documento e data de nascimento) |
+| POST | `/admin/users/{id}/approve-kyc` | operador: cria a conta no shard (via api) e ativa |
+| POST | `/admin/staff` | admin |
+
+Utilizadores de demonstração (`./scripts/seed.sh`):
+
+| Email | Role | Senha |
+|---|---|---|
+| `admin@globalscale.test` / `operador@…` / `auditor@…` | admin / operador / auditor | `Staff#2026` |
+| `ana.silva@`, `bruno.costa@`, `carla.mendes@cliente.test` | cliente EU (`GS-EU-00000001..3`) | `Cliente#2026` |
+| `david.smith@`, `emily.johnson@`, `frank.miller@cliente.test` | cliente AM (`GS-AM-00000001..3`) | `Cliente#2026` |
+
+```bash
+TOKEN=$(curl -s --cacert infra/certs/ca.crt https://localhost/auth/login \
+  -H 'content-type: application/json' \
+  -d '{"email":"ana.silva@cliente.test","password":"Cliente#2026"}' | jq -r .access_token)
+```
+
+Segurança aplicada:
+- **Senhas**: Argon2id. O hash corre numa thread (`asyncio.to_thread`) para não bloquear o event loop.
+- **Bloqueio**: 5 falhas seguidas → `423` durante 15 min. `SELECT … FOR UPDATE` serializa logins paralelos do mesmo utilizador, para não se contornar o contador.
+- **Sem enumeração de utilizadores**: email inexistente e senha errada dão a mesma resposta, e o tempo de resposta é igual (verificação Argon2 contra um hash fictício).
+- **JWT RS256** com `kid` (thumbprint RFC 7638). Só o `auth` tem a chave privada. A validação exige `exp`, `iss`, `aud`, `kid` e `alg=RS256` (bloqueia `alg: none`).
+- **Refresh tokens**: guardados só como SHA-256. Rodam a cada uso, e um token revogado usado de novo revoga todas as sessões do utilizador (deteção de roubo).
+- **Dados em repouso**: `document_id` e `birth_date` cifrados com AES-256-GCM (`nonce || ciphertext || tag`), com o `user_id` como *associated data*. A chave (`infra/keys/private/auth-data.key`) só está montada no contentor `auth`.
+- **KYC**: a aprovação cria primeiro a conta (chamada à api com um token de serviço `role=service`, 60 s). Se a api estiver em baixo → `503` e o utilizador continua pendente.
+
 ## Limitações conhecidas (parcial)
+
+- O access token JWT é *stateless*: o logout revoga o refresh token, mas o access token continua válido até expirar (máx. 15 min). Em produção: lista de `jti` revogados ou tokens mais curtos.
 
 - Failover manual (`failover.sh`); em produção, Patroni + etcd. Se os **dois** nós de uma região estiverem em baixo depois de um failover e o antigo primário arrancar primeiro, ele fica primário e o que foi escrito no nó promovido perde-se. É precisamente o problema que um gestor de cluster com consenso resolve.
 - Replicação assíncrona: com `docker stop` (paragem limpa) o primário envia todo o WAL à réplica antes de sair. Numa queda abrupta, as últimas transações podem não ter chegado. Replicação síncrona (`synchronous_standby_names`) evitaria isso, à custa de latência.
@@ -84,3 +124,4 @@ Os serviços ligam-se com conninfo multi-host (`host=pg-europa.global.local,pg-e
 - Servidor NFS único (ponto único de falha); em produção, GlusterFS/CephFS replicado.
 - Em Docker Desktop todos os mounts NFS são feitos pelo mesmo kernel (a VM do Docker, `clientaddr=172.28.0.1`). Os locks são arbitrados pelo servidor (`local_lock=none`), mas num cenário real cada nó seria uma máquina diferente com o seu próprio cliente NFS.
 - `Graceless = true` (ver acima).
+- Nunca alterar o diretório exportado diretamente no servidor NFS: os clientes têm cache de entradas e ficam com referências obsoletas. Todas as escritas passam pelo protocolo NFS.
