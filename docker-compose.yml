@@ -10,10 +10,37 @@ networks:
     ipam:
       config:
         - subnet: 172.28.0.0/24
+          # Containers without a fixed IP (test clients, pgclient) get one from here,
+          # so they never take the fixed IP of a service that starts later.
+          ip_range: 172.28.0.192/26
+
+x-postgres: &postgres
+  image: postgres:16
+  entrypoint: ["/usr/local/bin/gss-entrypoint.sh"]
+  shm_size: 128mb
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U postgres -h /var/run/postgresql"]
+    interval: 3s
+    timeout: 3s
+    retries: 40
+  stop_grace_period: 30s
+
+x-postgres-env: &postgres-env
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+  REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-change-me-too}
+  AUTH_DB_PASSWORD: ${AUTH_DB_PASSWORD:-auth-pass}
+  COORD_DB_PASSWORD: ${COORD_DB_PASSWORD:-coord-pass}
+  API_DB_PASSWORD: ${API_DB_PASSWORD:-api-pass}
 
 volumes:
   # Storage of the NFS server itself (local disk of the "nfs" node).
   nfs-data:
+  pg-core-data:
+  pg-europa-data:
+  pg-europa-replica-data:
+  pg-america-data:
+  pg-america-replica-data:
 
   # Distributed file system as seen by the other nodes: an NFS v4 mount of nfs:/audit.
   # The Docker daemon does the mount, so client containers need no extra privileges.
@@ -45,6 +72,130 @@ services:
       retries: 20
     restart: unless-stopped
 
+  # ---------------- PostgreSQL ----------------
+  pg-core:
+    <<: *postgres
+    container_name: pg-core
+    hostname: pg-core
+    environment:
+      <<: *postgres-env
+      NODE_NAME: pg-core
+    volumes:
+      - pg-core-data:/var/lib/postgresql/data
+      - ./infra/postgres/init/core:/docker-entrypoint-initdb.d:ro
+      - ./infra/postgres/entrypoint.sh:/usr/local/bin/gss-entrypoint.sh:ro
+      - ./infra/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./infra/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./infra/certs:/certs:ro
+    networks:
+      globalnet:
+        ipv4_address: 172.28.0.60
+        aliases: [pg-core.global.local]
+
+  pg-europa:
+    <<: *postgres
+    container_name: pg-europa
+    hostname: pg-europa
+    environment:
+      <<: *postgres-env
+      NODE_NAME: pg-europa
+      PEER_HOST: pg-europa-replica.global.local
+      INITIAL_ROLE: primary
+      SHARD_REGION: EU
+    volumes:
+      - pg-europa-data:/var/lib/postgresql/data
+      - ./infra/postgres/init/shard:/docker-entrypoint-initdb.d:ro
+      - ./infra/postgres/entrypoint.sh:/usr/local/bin/gss-entrypoint.sh:ro
+      - ./infra/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./infra/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./infra/certs:/certs:ro
+    networks:
+      globalnet:
+        ipv4_address: 172.28.0.61
+        aliases: [pg-europa.global.local]
+
+  pg-europa-replica:
+    <<: *postgres
+    container_name: pg-europa-replica
+    hostname: pg-europa-replica
+    environment:
+      <<: *postgres-env
+      NODE_NAME: pg-europa-replica
+      PEER_HOST: pg-europa.global.local
+      INITIAL_ROLE: replica
+      SHARD_REGION: EU
+    volumes:
+      - pg-europa-replica-data:/var/lib/postgresql/data
+      - ./infra/postgres/init/shard:/docker-entrypoint-initdb.d:ro
+      - ./infra/postgres/entrypoint.sh:/usr/local/bin/gss-entrypoint.sh:ro
+      - ./infra/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./infra/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./infra/certs:/certs:ro
+    networks:
+      globalnet:
+        ipv4_address: 172.28.0.62
+        aliases: [pg-europa-replica.global.local]
+
+  pg-america:
+    <<: *postgres
+    container_name: pg-america
+    hostname: pg-america
+    environment:
+      <<: *postgres-env
+      NODE_NAME: pg-america
+      PEER_HOST: pg-america-replica.global.local
+      INITIAL_ROLE: primary
+      SHARD_REGION: AM
+    volumes:
+      - pg-america-data:/var/lib/postgresql/data
+      - ./infra/postgres/init/shard:/docker-entrypoint-initdb.d:ro
+      - ./infra/postgres/entrypoint.sh:/usr/local/bin/gss-entrypoint.sh:ro
+      - ./infra/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./infra/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./infra/certs:/certs:ro
+    networks:
+      globalnet:
+        ipv4_address: 172.28.0.63
+        aliases: [pg-america.global.local]
+
+  pg-america-replica:
+    <<: *postgres
+    container_name: pg-america-replica
+    hostname: pg-america-replica
+    environment:
+      <<: *postgres-env
+      NODE_NAME: pg-america-replica
+      PEER_HOST: pg-america.global.local
+      INITIAL_ROLE: replica
+      SHARD_REGION: AM
+    volumes:
+      - pg-america-replica-data:/var/lib/postgresql/data
+      - ./infra/postgres/init/shard:/docker-entrypoint-initdb.d:ro
+      - ./infra/postgres/entrypoint.sh:/usr/local/bin/gss-entrypoint.sh:ro
+      - ./infra/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./infra/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./infra/certs:/certs:ro
+    networks:
+      globalnet:
+        ipv4_address: 172.28.0.64
+        aliases: [pg-america-replica.global.local]
+
+  # psql client on globalnet (profile "tools"): used by seed.sh and the tests.
+  # Usage: docker compose run --rm -T pgclient "<conninfo>" -c "SELECT 1"
+  pgclient:
+    image: postgres:16
+    profiles: [tools]
+    entrypoint: ["psql", "-v", "ON_ERROR_STOP=1", "-X"]
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      PGUSER: postgres
+      PGSSLROOTCERT: /certs/ca.crt
+      PGCONNECT_TIMEOUT: "5"
+    volumes:
+      - ./infra/certs/ca.crt:/certs/ca.crt:ro
+      - ./scripts/sql:/sql:ro
+    networks: [globalnet]
+
   # --- Phase 0 test clients (profile "nfs-test"): two nodes writing to the same NFS files ---
   nfs-test-a: &nfs-test
     image: python:3.12-slim
@@ -55,14 +206,9 @@ services:
     volumes:
       - audit:/audit
       - ./tests/integration/nfs_writer.py:/nfs_writer.py:ro
-    networks:
-      globalnet:
-        ipv4_address: 172.28.0.251
+    networks: [globalnet]
     command: ["python", "/nfs_writer.py", "node-a", "node-b"]
 
   nfs-test-b:
     <<: *nfs-test
-    networks:
-      globalnet:
-        ipv4_address: 172.28.0.252
     command: ["python", "/nfs_writer.py", "node-b", "node-a"]
