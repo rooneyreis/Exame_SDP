@@ -1,0 +1,45 @@
+
+══════ Cenário 07 — Queda do serviço de autenticação ══════
+(2026-11-19T23:07:52Z)
+
+▶ 1. Login normal e pedido à API
+  POST /auth/login -> HTTP 200
+  GET /accounts -> HTTP 200 (X-Served-By: api-1)
+  ✔ conta lida (HTTP 200)
+    [
+      {
+        "iban": "GS-AM-00000001",
+        "balance": "10000.00"
+      }
+    ]
+  kid do token: 7OvHvs650CnDr6UsgnvvdLPI9UA3HDC_3ko6Xw4WsPg
+
+▶ 2. Derrubar o auth
+  $ docker stop auth
+  ✔ auth parado (a chave privada está inacessível: não se emitem tokens novos)
+
+▶ 3. O token existente continua a ser aceite pelas duas instâncias da API
+  GET /accounts -> HTTP 200 (X-Served-By: api-2)
+  GET /accounts -> HTTP 200 (X-Served-By: api-1)
+  GET /accounts -> HTTP 200 (X-Served-By: api-2)
+  GET /accounts -> HTTP 200 (X-Served-By: api-1)
+  ✔ validado localmente com a chave pública em cache (JWKS), sem contactar o auth
+  GET /health -> HTTP 200 (X-Served-By: api-2)
+  jwks em cache na api-2: ["7OvHvs650CnDr6UsgnvvdLPI9UA3HDC_3ko6Xw4WsPg"]
+
+▶ 4. Um login novo falha (o emissor de tokens está em baixo)
+  POST /auth/login -> HTTP 504
+  ✔ login recusado com HTTP 504 (auth indisponível)
+
+▶ 5. Um token forjado continua a ser rejeitado (a api não aceita qualquer coisa só porque o auth caiu)
+  GET /accounts -> HTTP 401 (X-Served-By: api-1)
+  ✔ token adulterado rejeitado (HTTP 401)
+
+▶ 6. Voltar a ligar o auth
+  $ docker start auth
+  ✔ auth está healthy
+  POST /auth/login -> HTTP 200
+  ✔ login volta a funcionar
+
+══════ Cenário 07 concluído ══════
+(2026-11-19T23:08:01Z)

@@ -5,6 +5,7 @@
 (Ed25519 signatures and canonical JSON are added in Phase 4.)
 """
 import hashlib
+import json
 import os
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -31,3 +32,9 @@ def decrypt_field(key: bytes, blob: bytes, associated_data: bytes) -> str:
 
 def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def canonical_json(obj) -> bytes:
+    """Deterministic JSON: sorted keys, no spaces, UTF-8. The same object always gives
+    the same bytes, which is required before hashing or signing it."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str).encode("utf-8")

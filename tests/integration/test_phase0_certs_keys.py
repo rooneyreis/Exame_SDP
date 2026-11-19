@@ -36,6 +36,8 @@ def test_certificate_has_dns_and_ip_sans(name, ip):
     cert = x509.load_pem_x509_certificate((CERTS / f"{name}.crt").read_bytes())
     san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     extra_dns, extra_ip = ({"localhost"}, ["127.0.0.1"]) if name == "nginx" else (set(), [])
+    if name.startswith("api-"):
+        extra_dns = {"api.global.local"}
     assert set(san.get_values_for_type(x509.DNSName)) == {name, f"{name}.global.local"} | extra_dns
     assert [str(a) for a in san.get_values_for_type(x509.IPAddress)] == [ip] + extra_ip
 

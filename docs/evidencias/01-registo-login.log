@@ -1,0 +1,122 @@
+
+══════ Cenário 01 — Registo, KYC, conta no shard certo e login ══════
+(2026-11-19T23:07:26Z)
+
+▶ 1. Registo de um cliente da Europa e de um cliente da América
+  POST /auth/register -> HTTP 201
+  ✔ cliente EU registado (HTTP 201)
+    {
+      "id": "81533c04-2f04-44a7-90de-f484458359a0",
+      "status": "PENDENTE_VERIFICACAO",
+      "region": "EU"
+    }
+  POST /auth/register -> HTTP 201
+  ✔ cliente AM registado (HTTP 201)
+    {
+      "id": "0e43368a-7797-421e-8780-67b590722461",
+      "status": "PENDENTE_VERIFICACAO",
+      "region": "AM"
+    }
+
+▶ 2. Ainda pendente: o login é recusado
+  POST /auth/login -> HTTP 403
+  ✔ login recusado enquanto PENDENTE_VERIFICACAO (HTTP 403)
+    "conta não ativa (estado: PENDENTE_VERIFICACAO)"
+
+▶ 3. Na BD, o documento de identificação está cifrado (AES-256-GCM)
+  $ psql "host=pg-core.global.local dbname=auth" -c "SELECT email, status, encode(substr(document_id_enc,1,24),'hex') AS document_id_enc FROM users WHERE id = '81533c04-2f04-44a7-90de-f484458359a0'"
+               email            |        status        |                 document_id_enc                  
+    ----------------------------+----------------------+--------------------------------------------------
+     maria.1795129646@demo.test | PENDENTE_VERIFICACAO | 49abc5a9019b87145729a43c868ae3cc07078a31fc06e133
+    (1 row)
+    
+
+▶ 4. O operador aprova o KYC dos dois clientes
+  POST /auth/login -> HTTP 200
+  GET /admin/users?status=PENDENTE_VERIFICACAO -> HTTP 200
+  pendentes: teste.0d8aee23@cliente.test, teste.d0865a76@cliente.test, teste.e9d87a89@cliente.test, teste.f2d6c999@cliente.test, teste.dbe8dada@cliente.test, teste.e422a637@cliente.test, teste.729e84e5@cliente.test, teste.5d492c1b@cliente.test, teste.ac5f36c9@cliente.test, teste.e480444d@cliente.test, teste.389ddebb@cliente.test, teste.b547f2f6@cliente.test, maria.1795129646@demo.test, john.1795129646@demo.test
+  POST /admin/users/81533c04-2f04-44a7-90de-f484458359a0/approve-kyc -> HTTP 200
+  ✔ KYC EU aprovado (HTTP 200)
+    {
+      "iban": "GS-EU-00000006",
+      "user_id": "81533c04-2f04-44a7-90de-f484458359a0",
+      "region": "EU",
+      "currency": "EUR",
+      "balance": "0.00",
+      "status": "ATIVA",
+      "daily_limit": "50000.00",
+      "created_at": "2026-11-19T23:07:27.854788+00:00",
+      "created": true
+    }
+  POST /admin/users/0e43368a-7797-421e-8780-67b590722461/approve-kyc -> HTTP 200
+  ✔ KYC AM aprovado (HTTP 200)
+    {
+      "iban": "GS-AM-00000071",
+      "user_id": "0e43368a-7797-421e-8780-67b590722461",
+      "region": "AM",
+      "currency": "USD",
+      "balance": "0.00",
+      "status": "ATIVA",
+      "daily_limit": "50000.00",
+      "created_at": "2026-11-19T23:07:27.925406+00:00",
+      "created": true
+    }
+
+▶ 5. Consulta direta a cada shard: cada conta só existe no nó da sua região
+  pg-europa:
+  $ psql "host=pg-europa.global.local,pg-europa-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT iban, currency, balance FROM accounts WHERE user_id IN ('81533c04-2f04-44a7-90de-f484458359a0','0e43368a-7797-421e-8780-67b590722461')"
+          iban      | currency | balance 
+    ----------------+----------+---------
+     GS-EU-00000006 | EUR      |    0.00
+    (1 row)
+    
+  pg-america:
+  $ psql "host=pg-america.global.local,pg-america-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT iban, currency, balance FROM accounts WHERE user_id IN ('81533c04-2f04-44a7-90de-f484458359a0','0e43368a-7797-421e-8780-67b590722461')"
+          iban      | currency | balance 
+    ----------------+----------+---------
+     GS-AM-00000071 | USD      |    0.00
+    (1 row)
+    
+  ✔ GS-EU-00000006 só no pg-europa, GS-AM-00000071 só no pg-america
+  a réplica também a tem (replicação streaming):
+  $ psql "host=pg-europa-replica.global.local dbname=bank" -c "SELECT iban, pg_is_in_recovery() AS replica FROM accounts WHERE iban = 'GS-EU-00000006'"
+          iban      | replica 
+    ----------------+---------
+     GS-EU-00000006 | t
+    (1 row)
+    
+
+▶ 6. Login do cliente EU: JWT RS256 emitido pelo auth
+  POST /auth/login -> HTTP 200
+  ✔ token recebido
+  header: {"alg":"RS256","kid":"7OvHvs650CnDr6UsgnvvdLPI9UA3HDC_3ko6Xw4WsPg","typ":"JWT"}
+  claims:
+    {
+      "sub": "81533c04-2f04-44a7-90de-f484458359a0",
+      "role": "cliente",
+      "region": "EU",
+      "iss": "auth.global.local",
+      "aud": "global-scale",
+      "iat": 1795129653,
+      "exp": 1795130553,
+      "jti": "6aa0d842-1999-4de6-9f9d-4e7c1f3744b1"
+    }
+
+▶ 7. GET /me — validado localmente pela api com a chave pública (JWKS)
+  GET /me -> HTTP 200 (X-Served-By: api-1)
+  ✔ dados do token e contas (HTTP 200)
+    {
+      "user_id": "81533c04-2f04-44a7-90de-f484458359a0",
+      "role": "cliente",
+      "region": "EU",
+      "accounts": [
+        {
+          "iban": "GS-EU-00000006",
+          "currency": "EUR",
+          "balance": "0.00"
+        }
+      ]
+    }
+
+══════ Cenário 01 concluído ══════
+(2026-11-19T23:07:33Z)

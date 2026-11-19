@@ -19,6 +19,7 @@ from psycopg import errors
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
+from common.audit import AuditLog
 from common.crypto import decrypt_field, encrypt_field
 from common.jwt_auth import TokenValidator, auth_dependencies, issue_token, key_id, public_jwk
 from common.logging import add_request_logging, log_extra, setup_logging
@@ -28,6 +29,7 @@ from .config import settings
 from .schemas import ApproveKycRequest, LoginRequest, RefreshRequest, RegisterRequest, StaffRequest
 
 log = setup_logging("auth")
+audit = AuditLog("auth")
 
 # --- Keys -------------------------------------------------------------------
 PRIVATE_KEY = serialization.load_pem_private_key(settings.jwt_private_key.read_bytes(), password=None)
@@ -136,6 +138,7 @@ async def register(body: RegisterRequest):
         raise HTTPException(status.HTTP_409_CONFLICT, "email ou telefone já registado")
 
     log.info("cliente registado, a aguardar KYC", extra=log_extra(user_id=str(user_id), region=body.region))
+    await audit.write("REGISTO", user_id=str(user_id), region=body.region)
     return {"id": str(user_id), "status": "PENDENTE_VERIFICACAO", "region": body.region}
 
 
@@ -176,8 +179,11 @@ async def login(body: LoginRequest):
         # the transaction is committed here, also when the login failed (counter update)
 
     if error:
+        event = "CONTA_BLOQUEADA" if error[0] == status.HTTP_423_LOCKED else "LOGIN_FALHOU"
+        await audit.write(event, email=email, reason=error[1])
         raise HTTPException(*error)
     log.info("login com sucesso", extra=log_extra(user_id=str(user["id"]), role=user["role"]))
+    await audit.write("LOGIN_OK", user_id=str(user["id"]), role=user["role"])
     return tokens
 
 
@@ -265,6 +271,7 @@ async def approve_kyc(user_id: uuid.UUID, body: ApproveKycRequest | None = None,
         await conn.execute(
             "UPDATE users SET status = 'ATIVA' WHERE id = %s AND status = 'PENDENTE_VERIFICACAO'", (user_id,))
     log.info("KYC aprovado", extra=log_extra(user_id=str(user_id), operador=claims["sub"], iban=account.get("iban")))
+    await audit.write("KYC_APROVADO", user_id=str(user_id), iban=account.get("iban"), operador=claims["sub"])
     return {"user_id": str(user_id), "status": "ATIVA", "account": account}
 
 
@@ -282,6 +289,7 @@ async def create_staff(body: StaffRequest, claims: dict = Depends(require_role("
     except errors.UniqueViolation:
         raise HTTPException(status.HTTP_409_CONFLICT, "email ou telefone já registado")
     log.info("staff criado", extra=log_extra(user_id=str(user_id), role=body.role, admin=claims["sub"]))
+    await audit.write("STAFF_CRIADO", user_id=str(user_id), role=body.role, admin=claims["sub"])
     return {"id": str(user_id), "role": body.role, "status": "ATIVA"}
 
 

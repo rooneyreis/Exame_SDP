@@ -2,7 +2,7 @@
 
 Plataforma distribuída de transações financeiras internacionais (Exame Prático de Sistemas Distribuídos e Paralelos — ISUTC, LECC 31).
 
-> Em construção, por fases. Estado atual: **Fase 2 — Auth** concluída.
+> Em construção, por fases. Estado atual: **Fase 3 — API + Nginx** concluída.
 
 ## Requisitos
 
@@ -15,7 +15,7 @@ Plataforma distribuída de transações financeiras internacionais (Exame Práti
 ```bash
 ./scripts/gen-certs.sh   # CA local + certificado TLS por serviço (infra/certs, não versionado)
 ./scripts/gen-keys.sh    # RS256 (JWT), Ed25519 (assinaturas), AES-256 (dados em repouso) — infra/keys
-docker compose up -d     # NFS, 5 nós PostgreSQL, auth, nginx
+docker compose up -d     # NFS, 5 nós PostgreSQL, auth, api-1, api-2, nginx
 ./scripts/seed.sh        # câmbios, 3 contas por shard, staff e 6 clientes
 make test                # suite de testes (unitários + integração)
 ```
@@ -112,6 +112,39 @@ Segurança aplicada:
 - **Refresh tokens**: guardados só como SHA-256. Rodam a cada uso, e um token revogado usado de novo revoga todas as sessões do utilizador (deteção de roubo).
 - **Dados em repouso**: `document_id` e `birth_date` cifrados com AES-256-GCM (`nonce || ciphertext || tag`), com o `user_id` como *associated data*. A chave (`infra/keys/private/auth-data.key`) só está montada no contentor `auth`.
 - **KYC**: a aprovação cria primeiro a conta (chamada à api com um token de serviço `role=service`, 60 s). Se a api estiver em baixo → `503` e o utilizador continua pendente.
+
+## API (api-1 e api-2 atrás do Nginx)
+
+| Método | Endpoint | Quem |
+|---|---|---|
+| GET | `/me`, `/accounts` | cliente (contas no shard da sua região) |
+| GET | `/accounts/{iban}` | dono, operador |
+| GET | `/accounts/{iban}/movements` | dono, operador, auditor |
+| POST | `/accounts/{iban}/deposit`, `/withdraw` | operador (transação local no shard) |
+| GET | `/fx-rates` | autenticado |
+| POST | `/internal/accounts` | `role=service` (chamado pelo auth no KYC; idempotente) |
+| GET | `/health` | público: estado dos shards (nó que responde) e chaves JWKS em cache |
+
+- **Validação JWT descentralizada**: cada instância descarrega o JWKS do auth no arranque e a cada 10 min. Se o auth cair, continua a validar com a chave em cache (cenário 07).
+- **Routing por região** centralizado em `common/db.py`: o prefixo do IBAN (`GS-EU-`/`GS-AM-`) escolhe o pool do shard; o claim `region` do JWT escolhe o shard das contas do utilizador.
+- **Movimentos** têm `origin` (`TRANSFERENCIA`/`DEPOSITO`/`LEVANTAMENTO`): depósitos e levantamentos são transações locais do shard, as transferências passam pelo coordenador (Fase 4).
+- **Nginx**: round-robin entre `172.28.0.11` e `172.28.0.12`. `proxy_next_upstream error timeout http_502 http_503`: se uma instância não responde, o pedido é repetido na outra e a falhada fica de fora durante `fail_timeout=10s`. POSTs só são repetidos se nunca chegaram ao backend, por isso um depósito nunca é executado duas vezes. O TLS até aos backends é verificado (`proxy_ssl_verify on`, nome `api.global.local` presente nos dois certificados).
+- Header `X-Served-By` mostra que instância respondeu.
+
+## Auditoria (NFS)
+
+Cada nó escreve em `/audit/<AAAA-MM-DD>/<nó>.log` (JSON Lines). Cada linha tem `prev_hash` e `hash = SHA-256(prev_hash + JSON canónico da linha)`: alterar, apagar ou reordenar uma linha parte a cadeia a partir daí (`common/audit.py`, validação na Fase 6).
+
+## Cenários de demonstração
+
+```bash
+./scripts/demo/01-registo-login.sh   # registo → KYC → conta no shard certo → login → JWT
+./scripts/demo/06-queda-api.sh       # docker stop api-1 → tudo servido pela api-2
+./scripts/demo/07-queda-auth.sh      # docker stop auth → tokens existentes continuam válidos
+PAUSE=1 ./scripts/demo/06-queda-api.sh   # pausa entre passos (apresentação ao docente)
+```
+
+A saída de cada cenário fica em `docs/evidencias/<cenário>.log`.
 
 ## Limitações conhecidas (parcial)
 

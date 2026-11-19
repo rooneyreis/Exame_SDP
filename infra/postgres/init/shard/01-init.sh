@@ -36,6 +36,10 @@ CREATE TABLE movements (
   amount        NUMERIC(18,2) NOT NULL CHECK (amount > 0),
   currency      TEXT NOT NULL,
   balance_after NUMERIC(18,2) NOT NULL,
+  -- Transfers are logged by the coordinator; deposits/withdrawals are local operations
+  -- of the shard. /admin/consistency uses this to tell them apart.
+  origin        TEXT NOT NULL DEFAULT 'TRANSFERENCIA'
+                CHECK (origin IN ('TRANSFERENCIA','DEPOSITO','LEVANTAMENTO')),
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (tx_id, iban, type)          -- idempotency at shard level
 );

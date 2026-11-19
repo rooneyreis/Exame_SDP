@@ -210,6 +210,46 @@ services:
       retries: 20
     restart: unless-stopped
 
+  api-1: &api
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    container_name: api-1
+    hostname: api-1
+    environment:
+      INSTANCE_ID: api-1
+      API_DB_PASSWORD: ${API_DB_PASSWORD:-api-pass}
+      JWKS_URL: https://auth.global.local:8010/.well-known/jwks.json
+    volumes:
+      - ./infra/certs:/certs:ro
+      - audit:/audit
+    depends_on:
+      nfs: { condition: service_healthy }
+      auth: { condition: service_healthy }
+    networks:
+      globalnet:
+        ipv4_address: 172.28.0.11
+        aliases: [api-1.global.local]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import ssl,urllib.request,os; urllib.request.urlopen('https://' + os.environ['INSTANCE_ID'] + '.global.local:8000/health', context=ssl.create_default_context(cafile='/certs/ca.crt'), timeout=3)\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  api-2:
+    <<: *api
+    container_name: api-2
+    hostname: api-2
+    environment:
+      INSTANCE_ID: api-2
+      API_DB_PASSWORD: ${API_DB_PASSWORD:-api-pass}
+      JWKS_URL: https://auth.global.local:8010/.well-known/jwks.json
+    networks:
+      globalnet:
+        ipv4_address: 172.28.0.12
+        aliases: [api-2.global.local]
+
   nginx:
     image: nginx:1.27-alpine
     container_name: nginx
@@ -221,6 +261,8 @@ services:
       - ./infra/certs:/certs:ro
     depends_on:
       auth: { condition: service_healthy }
+      api-1: { condition: service_healthy }
+      api-2: { condition: service_healthy }
     networks:
       globalnet:
         ipv4_address: 172.28.0.10

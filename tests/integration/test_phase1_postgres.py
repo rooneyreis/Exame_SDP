@@ -113,7 +113,8 @@ def test_balance_can_never_be_negative():
 
 @pytest.mark.parametrize("region,currency", [("EU", "EUR"), ("AM", "USD")])
 def test_seed_accounts_exist(region, currency):
-    out = psql(shard_conninfo(region), "SELECT count(*), min(currency), max(currency) FROM accounts WHERE iban LIKE 'GS-%-0000000_'")
+    seeded = ", ".join(f"'GS-{region}-0000000{i}'" for i in (1, 2, 3))
+    out = psql(shard_conninfo(region), f"SELECT count(*), min(currency), max(currency) FROM accounts WHERE iban IN ({seeded})")
     assert out.stdout.strip() == f"3|{currency}|{currency}"
 
 
