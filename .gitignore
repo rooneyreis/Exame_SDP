@@ -1,0 +1,18 @@
+# Generated secrets and certificates (never commit)
+infra/certs/*
+!infra/certs/.gitkeep
+infra/keys/
+.env
+
+# Local overrides (e.g. exposing Postgres ports for debugging)
+docker-compose.override.yml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Java
+*.class
+legacy-bank/out/

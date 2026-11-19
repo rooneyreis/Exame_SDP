@@ -1,0 +1,68 @@
+# Global-Scale System — Docker Compose
+# Fixed IPs on the "globalnet" bridge; every service also gets the alias <name>.global.local.
+# Only nginx:443 is published on the host (added in Phase 3).
+
+name: gss
+
+networks:
+  globalnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+
+volumes:
+  # Storage of the NFS server itself (local disk of the "nfs" node).
+  nfs-data:
+
+  # Distributed file system as seen by the other nodes: an NFS v4 mount of nfs:/audit.
+  # The Docker daemon does the mount, so client containers need no extra privileges.
+  audit:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: "addr=172.28.0.50,nfsvers=4,rw,hard,timeo=50"
+      device: ":/audit"
+
+services:
+  nfs:
+    build: ./infra/nfs
+    container_name: nfs
+    hostname: nfs
+    # Ganesha's VFS backend uses open_by_handle_at(), which needs this capability.
+    cap_add:
+      - DAC_READ_SEARCH
+    volumes:
+      - nfs-data:/audit
+    networks:
+      globalnet:
+        ipv4_address: 172.28.0.50
+        aliases: [nfs.global.local]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/2049'"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+    restart: unless-stopped
+
+  # --- Phase 0 test clients (profile "nfs-test"): two nodes writing to the same NFS files ---
+  nfs-test-a: &nfs-test
+    image: python:3.12-slim
+    profiles: [nfs-test]
+    depends_on:
+      nfs:
+        condition: service_healthy
+    volumes:
+      - audit:/audit
+      - ./tests/integration/nfs_writer.py:/nfs_writer.py:ro
+    networks:
+      globalnet:
+        ipv4_address: 172.28.0.251
+    command: ["python", "/nfs_writer.py", "node-a", "node-b"]
+
+  nfs-test-b:
+    <<: *nfs-test
+    networks:
+      globalnet:
+        ipv4_address: 172.28.0.252
+    command: ["python", "/nfs_writer.py", "node-b", "node-a"]
