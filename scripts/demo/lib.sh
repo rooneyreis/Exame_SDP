@@ -84,5 +84,69 @@ wait_healthy() {  # wait_healthy CONTAINER
   fail "$1 não ficou healthy"
 }
 
+# decimal_true "D('10.00') - 5 == D('5.00')": exact decimal arithmetic (no float rounding)
+decimal_true() { python3 -c "from decimal import Decimal as D; import sys; sys.exit(0 if ($1) else 1)"; }
+
 STAFF_PASSWORD="Staff#2026"
 CLIENT_PASSWORD="Cliente#2026"
+
+# --- transfers / 2PC helpers (Phase 4) ---------------------------------------------
+
+# transfer FROM_IBAN TO_IBAN AMOUNT IDEMPOTENCY_KEY  (as the client in $TOKEN)
+transfer() {
+  EXTRA_HEADERS=("Idempotency-Key: $4")
+  api POST /transfers "{\"from_iban\":\"$1\",\"to_iban\":\"$2\",\"amount\":\"$3\"}"
+  EXTRA_HEADERS=()
+}
+
+# timeline: prints the tx_events of the transaction in $LAST_BODY
+timeline() {
+  echo "$LAST_BODY" | jq -r '.events[] | "    \(.at | tostring | .[11:23])  \(.event)\(if .detail then "   " + (.detail | tostring) else "" end)"'
+}
+
+# as ROLE_EMAIL: run the following api call with another identity, then restore $TOKEN
+with_user() {  # with_user EMAIL PASSWORD METHOD PATH [JSON]
+  local saved=$TOKEN
+  login "$1" "$2" >/dev/null
+  api "$3" "$4" "${5:-}"
+  TOKEN=$saved
+}
+
+chaos() {  # chaos '{"pause_after_prepare": 20}' | chaos '{"off": true}'
+  with_user admin@globalscale.test "$STAFF_PASSWORD" POST /admin/chaos "$1"
+  [[ "$LAST_STATUS" == 200 ]] || fail "chaos falhou"
+  info "chaos no coordenador: $(echo "$LAST_BODY" | jq -c .)"
+}
+
+check_consistency() {
+  with_user auditor@globalscale.test "$STAFF_PASSWORD" GET /admin/consistency
+  echo "$LAST_BODY" | jq -c '{ok, checked_transactions, confirmed, aborted, in_progress, prepared_xacts, problems}' | sed 's/^/    /'
+  [[ "$(echo "$LAST_BODY" | jq -r .ok)" == "true" ]] && ok "/admin/consistency OK: sem dinheiro perdido nem duplicado" \
+    || fail "inconsistência detetada"
+}
+
+balance() {  # balance IBAN -> prints the balance (read with the operator's identity)
+  local saved=$TOKEN saved_status=$LAST_STATUS saved_body=$LAST_BODY
+  login operador@globalscale.test "$STAFF_PASSWORD" >/dev/null 2>&1
+  local b
+  b=$(curl -s --cacert "$CA" -H "Authorization: Bearer $TOKEN" "$BASE/accounts/$1" | jq -r .balance)
+  TOKEN=$saved; LAST_STATUS=$saved_status; LAST_BODY=$saved_body
+  echo "$b"
+}
+
+prepared_xacts() {  # shows pg_prepared_xacts in both shards
+  for n in pg-europa pg-america; do
+    local out
+    out=$(docker exec "$n" psql -U postgres -d bank -tAc "SELECT gid || '  (preparada às ' || to_char(prepared, 'HH24:MI:SS') || ')' FROM pg_prepared_xacts" 2>/dev/null || echo "(nó em baixo)")
+    info "$n: ${out:-nenhuma}"
+  done
+}
+
+wait_tx_state() {  # wait_tx_state TX_ID STATE TIMEOUT
+  for _ in $(seq 1 "$3"); do
+    api GET "/transfers/$1" >/dev/null
+    [[ "$(echo "$LAST_BODY" | jq -r .state)" == "$2" ]] && return 0
+    sleep 1
+  done
+  return 1
+}

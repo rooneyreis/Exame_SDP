@@ -12,6 +12,9 @@ class Settings:
     db_user: str = os.environ.get("API_DB_USER", "api_svc")
     db_password: str = os.environ.get("API_DB_PASSWORD", "api-pass")
     audit_dir: str = os.environ.get("AUDIT_DIR", "/audit")
+    coordinator_url: str = os.environ.get("COORDINATOR_URL", "https://coordinator.global.local:8020")
+    # Ed25519 private key of THIS instance (api-1 or api-2) to sign requests to the coordinator
+    signing_key: str = os.environ.get("SIGNING_KEY", "/keys/private/signing-ed25519.pem")
 
 
 settings = Settings()

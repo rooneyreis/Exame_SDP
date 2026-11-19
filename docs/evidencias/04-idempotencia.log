@@ -1,0 +1,43 @@
+
+══════ Cenário 04 — Idempotência ══════
+(2026-11-19T23:39:51Z)
+
+▶ 1. A Emily envia a mesma transferência 3 vezes (ex.: o cliente repetiu por timeout de rede)
+  POST /auth/login -> HTTP 200
+  Idempotency-Key: demo04-1795131591147006436
+  POST /transfers -> HTTP 201 (X-Served-By: api-2)
+  envio 1: HTTP 201  tx_id=152453bb-3868-5a94-bb1b-be11fd5868ae  state=CONFIRMADA  replay=false
+  POST /transfers -> HTTP 200 (X-Served-By: api-1)
+  envio 2: HTTP 200  tx_id=152453bb-3868-5a94-bb1b-be11fd5868ae  state=CONFIRMADA  replay=true
+  POST /transfers -> HTTP 200 (X-Served-By: api-2)
+  envio 3: HTTP 200  tx_id=152453bb-3868-5a94-bb1b-be11fd5868ae  state=CONFIRMADA  replay=true
+  ✔ o mesmo tx_id nas 3 respostas
+
+▶ 2. Só existe UM débito no shard
+  $ psql "host=pg-america.global.local,pg-america-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT count(*) AS debitos FROM movements WHERE tx_id = '152453bb-3868-5a94-bb1b-be11fd5868ae' AND type = 'DEBITO'"
+     debitos 
+    ---------
+           1
+    (1 row)
+    
+  saldo GS-AM-00000002: 5083.00 → 5058.00 USD
+  ✔ debitado uma única vez (−25.00)
+  os pedidos repetidos ficam registados no log:
+  GET /transfers/152453bb-3868-5a94-bb1b-be11fd5868ae -> HTTP 200 (X-Served-By: api-2)
+    23:39:51.464  INICIADA   {"kind":"DISTRIBUIDA","amount":"25.00","signer":"api-2","fx_rate":"0.92592593","converted":"23.15","to_currency":"EUR","from_currency":"USD"}
+    23:39:51.470  PREPARANDO
+    23:39:51.491  PREPARADO_EU   {"iban":"GS-EU-00000003","side":"CREDITO"}
+    23:39:51.512  PREPARADO_AM   {"iban":"GS-AM-00000002","side":"DEBITO"}
+    23:39:51.517  DECISAO_COMMIT
+    23:39:51.522  COMMIT_EU
+    23:39:51.527  COMMIT_AM
+    23:39:51.533  CONFIRMADA
+    23:39:51.597  PEDIDO_REPETIDO   {"signer":"api-1"}
+    23:39:51.656  PEDIDO_REPETIDO   {"signer":"api-2"}
+
+▶ 3. Reutilizar a chave com outro montante é recusado
+  POST /transfers -> HTTP 409 (X-Served-By: api-1)
+  ✔ Idempotency-Key já usada com outros dados (HTTP 409)
+
+══════ Cenário 04 concluído ══════
+(2026-11-19T23:39:53Z)

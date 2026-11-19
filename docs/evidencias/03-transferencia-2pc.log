@@ -1,0 +1,62 @@
+
+══════ Cenário 03 — Transferência distribuída com 2PC (EU/EUR → AM/USD) ══════
+(2026-11-19T23:39:47Z)
+  saldos antes: GS-EU-00000001=9726.57 EUR (pg-europa)   GS-AM-00000001=10201.77 USD (pg-america)
+
+▶ 1. Ana (EU) transfere 100.00 EUR para o David (AM)
+  POST /auth/login -> HTTP 200
+  POST /transfers -> HTTP 201 (X-Served-By: api-1)
+  ✔ transferência confirmada (HTTP 201)
+    {
+      "tx_id": "67cde291-6a1e-5a23-b5d7-58f77d115447",
+      "kind": "DISTRIBUIDA",
+      "state": "CONFIRMADA",
+      "amount": "100.00",
+      "from_currency": "EUR",
+      "fx_rate": "1.08000000",
+      "converted_amount": "108.00",
+      "to_currency": "USD"
+    }
+
+▶ 2. Linha temporal do 2PC (tabela tx_events no log do coordenador)
+    23:39:47.844  INICIADA   {"kind":"DISTRIBUIDA","amount":"100.00","signer":"api-1","fx_rate":"1.08000000","converted":"108.00","to_currency":"USD","from_currency":"EUR"}
+    23:39:47.849  PREPARANDO
+    23:39:47.871  PREPARADO_EU   {"iban":"GS-EU-00000001","side":"DEBITO"}
+    23:39:47.891  PREPARADO_AM   {"iban":"GS-AM-00000001","side":"CREDITO"}
+    23:39:47.897  DECISAO_COMMIT
+    23:39:47.901  COMMIT_EU
+    23:39:47.906  COMMIT_AM
+    23:39:47.912  CONFIRMADA
+  
+  Fase 1: cada shard faz BEGIN … UPDATE … PREPARE TRANSACTION e vota SIM (PREPARADO_*)
+  Ponto de decisão: DECISAO_COMMIT gravada (commit) no pg-core ANTES de qualquer COMMIT PREPARED
+  Fase 2: COMMIT PREPARED em cada shard → CONFIRMADA
+
+▶ 3. Os movimentos, vistos diretamente em cada Postgres
+  pg-europa (débito em EUR):
+  $ psql "host=pg-europa.global.local,pg-europa-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT iban, type, amount, currency, balance_after FROM movements WHERE tx_id = '67cde291-6a1e-5a23-b5d7-58f77d115447'"
+          iban      |  type  | amount | currency | balance_after 
+    ----------------+--------+--------+----------+---------------
+     GS-EU-00000001 | DEBITO | 100.00 | EUR      |       9626.57
+    (1 row)
+    
+  pg-america (crédito em USD, já convertido):
+  $ psql "host=pg-america.global.local,pg-america-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT iban, type, amount, currency, balance_after FROM movements WHERE tx_id = '67cde291-6a1e-5a23-b5d7-58f77d115447'"
+          iban      |  type   | amount | currency | balance_after 
+    ----------------+---------+--------+----------+---------------
+     GS-AM-00000001 | CREDITO | 108.00 | USD      |      10309.77
+    (1 row)
+    
+  nenhuma transação ficou preparada (pendurada):
+  pg-europa: nenhuma
+  pg-america: nenhuma
+
+▶ 4. Saldos depois
+  GS-EU-00000001: 9726.57 → 9626.57 EUR    GS-AM-00000001: 10201.77 → 10309.77 USD
+  ✔ −100.00 EUR / +108.00 USD (taxa 1.08)
+  GET /admin/consistency -> HTTP 200 (X-Served-By: api-2)
+    {"ok":true,"checked_transactions":80,"confirmed":72,"aborted":8,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[]},"problems":[]}
+  ✔ /admin/consistency OK: sem dinheiro perdido nem duplicado
+
+══════ Cenário 03 concluído ══════
+(2026-11-19T23:39:51Z)

@@ -2,7 +2,7 @@
 
 Plataforma distribuída de transações financeiras internacionais (Exame Prático de Sistemas Distribuídos e Paralelos — ISUTC, LECC 31).
 
-> Em construção, por fases. Estado atual: **Fase 3 — API + Nginx** concluída.
+> Em construção, por fases. Estado atual: **Fase 4 — Coordenador 2PC** concluída.
 
 ## Requisitos
 
@@ -15,7 +15,7 @@ Plataforma distribuída de transações financeiras internacionais (Exame Práti
 ```bash
 ./scripts/gen-certs.sh   # CA local + certificado TLS por serviço (infra/certs, não versionado)
 ./scripts/gen-keys.sh    # RS256 (JWT), Ed25519 (assinaturas), AES-256 (dados em repouso) — infra/keys
-docker compose up -d     # NFS, 5 nós PostgreSQL, auth, api-1, api-2, nginx
+docker compose up -d     # NFS, 5 nós PostgreSQL, auth, coordinator, api-1, api-2, nginx
 ./scripts/seed.sh        # câmbios, 3 contas por shard, staff e 6 clientes
 make test                # suite de testes (unitários + integração)
 ```
@@ -131,6 +131,60 @@ Segurança aplicada:
 - **Nginx**: round-robin entre `172.28.0.11` e `172.28.0.12`. `proxy_next_upstream error timeout http_502 http_503`: se uma instância não responde, o pedido é repetido na outra e a falhada fica de fora durante `fail_timeout=10s`. POSTs só são repetidos se nunca chegaram ao backend, por isso um depósito nunca é executado duas vezes. O TLS até aos backends é verificado (`proxy_ssl_verify on`, nome `api.global.local` presente nos dois certificados).
 - Header `X-Served-By` mostra que instância respondeu.
 
+## Transferências e Two-Phase Commit (serviço `coordinator`)
+
+`POST /transfers` (cliente, header `Idempotency-Key` obrigatório) → a api valida (conta do próprio cliente, destino existe, 0 < montante ≤ 10 000) e envia ao coordenador um pedido **assinado com Ed25519** (`X-Payload-SHA256`, `X-Signature`, `X-Signer`; corpo em JSON canónico). `GET /transfers/{tx_id}` devolve o estado e a linha temporal (`tx_events`).
+
+```mermaid
+sequenceDiagram
+    participant A as api-1/api-2
+    participant C as coordinator
+    participant L as pg-core (log)
+    participant EU as pg-europa
+    participant AM as pg-america
+    A->>C: POST /tx (assinado Ed25519)
+    C->>C: verifica assinatura + SHA-256 + janela temporal
+    C->>L: INICIADA (commit)
+    C->>L: PREPARANDO (commit)
+    C->>EU: BEGIN; SELECT FOR UPDATE; UPDATE; INSERT; PREPARE TRANSACTION
+    EU-->>C: voto SIM
+    C->>AM: BEGIN; SELECT FOR UPDATE; UPDATE; INSERT; PREPARE TRANSACTION
+    AM-->>C: voto SIM
+    C->>L: DECISAO_COMMIT (commit) ← ponto de decisão
+    C->>EU: COMMIT PREPARED
+    C->>AM: COMMIT PREPARED
+    C->>L: CONFIRMADA
+```
+
+- **Mesmo shard** → transação local normal (`kind=LOCAL`). **Shards diferentes** → 2PC (`kind=DISTRIBUIDA`), com `xid = (1, tx_id, região)`.
+- **Log durável**: cada mudança de estado é gravada (commit) no pg-core **antes** de agir. A gravação de `DECISAO_COMMIT` é o ponto de decisão.
+- **Recuperação (presumed abort)**, a cada 5 s:
+  - `DECISAO_COMMIT` → `COMMIT PREPARED` onde ainda estiver preparada → `CONFIRMADA`;
+  - `PREPARANDO` há mais de 30 s → `ROLLBACK PREPARED` → `ABORTADA`;
+  - `INICIADA` local antiga → verifica se o commit chegou a acontecer (os movimentos existem?);
+  - preparadas órfãs nos shards (`tpc_recover`) → decididas pelo log;
+  - shard inacessível → nova tentativa com backoff exponencial (1, 2, 4… até 30 s).
+- Transações **em curso** neste processo nunca são tocadas pelo recovery (ex.: a que está em `pause_after_prepare`).
+- **Sem deadlocks distribuídos**: o PREPARE segue sempre a ordem global EU → AM (e por IBAN dentro do mesmo shard). Nenhum PostgreSQL vê os locks do outro, por isso o deadlock não seria detetado: é evitado por ordenação de recursos. `lock_timeout = 5s` fica como segunda barreira.
+- **Idempotência**: `tx_id = uuid5(user_id:Idempotency-Key)`, calculado pela api antes de chamar o coordenador. Se o coordenador morrer, o cliente já sabe o `tx_id` e repete com a mesma chave sem duplicar. Chave reutilizada com outros dados → `409`.
+- **Câmbio**: taxa de `fx_rates` fixada no log no momento da transferência; arredondamento bancário (half-even) ao cêntimo.
+- **Limite diário** verificado dentro do shard, com a conta bloqueada (`FOR UPDATE`), para transferências concorrentes não o ultrapassarem.
+- **Contrapressão**: máximo de 20 transações em simultâneo no coordenador (semáforo asyncio).
+
+Respostas: `201` CONFIRMADA, `200` repetição idempotente, `202` decisão tomada mas commit pendente num shard em baixo, `422` ABORTADA (com `failure_reason`), `503` coordenador indisponível (com `tx_id`).
+
+### Injeção de falhas (`POST /admin/chaos`, só admin)
+
+| Modo | Efeito |
+|---|---|
+| `{"pause_after_prepare": 20}` | espera 20 s depois do PREPARE, antes da decisão |
+| `{"crash_after_prepare": true}` | `os._exit(1)` antes da decisão → recovery aborta (presumed abort) |
+| `{"crash_after_decision": true}` | `os._exit(1)` depois da decisão → recovery faz COMMIT PREPARED |
+| `{"fail_participant": "EU"}` | esse shard vota NÃO |
+| `{"off": true}` | desliga tudo (também volta a off sempre que o coordenador reinicia) |
+
+`GET /admin/consistency` (auditor/admin): cada transação `CONFIRMADA` tem exatamente 1 débito e 1 crédito nos shards certos, as `ABORTADA` não têm movimentos, não há movimentos órfãos nem transações preparadas penduradas.
+
 ## Auditoria (NFS)
 
 Cada nó escreve em `/audit/<AAAA-MM-DD>/<nó>.log` (JSON Lines). Cada linha tem `prev_hash` e `hash = SHA-256(prev_hash + JSON canónico da linha)`: alterar, apagar ou reordenar uma linha parte a cadeia a partir daí (`common/audit.py`, validação na Fase 6).
@@ -141,12 +195,21 @@ Cada nó escreve em `/audit/<AAAA-MM-DD>/<nó>.log` (JSON Lines). Cada linha tem
 ./scripts/demo/01-registo-login.sh   # registo → KYC → conta no shard certo → login → JWT
 ./scripts/demo/06-queda-api.sh       # docker stop api-1 → tudo servido pela api-2
 ./scripts/demo/07-queda-auth.sh      # docker stop auth → tokens existentes continuam válidos
+./scripts/demo/02-transferencia-local.sh   # EU → EU, kind=LOCAL
+./scripts/demo/03-transferencia-2pc.sh     # EU/EUR → AM/USD com linha temporal do 2PC
+./scripts/demo/04-idempotencia.sh          # 3 envios, 1 débito
+./scripts/demo/09-queda-durante-2pc.sh     # docker stop pg-america entre o PREPARE e o COMMIT
+./scripts/demo/10-crash-coordenador.sh     # coordenador morre depois da decisão
+./scripts/demo/11-concorrencia.sh          # 50 transferências em paralelo
 PAUSE=1 ./scripts/demo/06-queda-api.sh   # pausa entre passos (apresentação ao docente)
 ```
 
 A saída de cada cenário fica em `docs/evidencias/<cenário>.log`.
 
 ## Limitações conhecidas (parcial)
+
+- **Coordenador 2PC é ponto único de falha temporário**: enquanto está em baixo, as transferências distribuídas ficam bloqueadas (e os shards mantêm os locks das preparadas), mas **nunca inconsistentes**, graças ao log durável e à recuperação. Em produção: coordenador replicado (consenso Raft) ou padrão Saga.
+- O 2PC bloqueia: entre o PREPARE e a decisão, as contas envolvidas ficam com lock. A Saga trocaria isto por consistência eventual com compensações.
 
 - O access token JWT é *stateless*: o logout revoga o refresh token, mas o access token continua válido até expirar (máx. 15 min). Em produção: lista de `jti` revogados ou tokens mais curtos.
 

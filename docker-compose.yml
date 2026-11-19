@@ -210,6 +210,38 @@ services:
       retries: 20
     restart: unless-stopped
 
+  coordinator:
+    build:
+      context: .
+      dockerfile: services/coordinator/Dockerfile
+    container_name: coordinator
+    hostname: coordinator
+    environment:
+      COORD_DB_PASSWORD: ${COORD_DB_PASSWORD:-coord-pass}
+      TRUSTED_SIGNERS: api-1,api-2
+    volumes:
+      - ./infra/certs:/certs:ro
+      # Public keys only: it verifies signatures from api-1/api-2 (and legacy-bank, Phase 5).
+      - ./infra/keys/public:/keys/public:ro
+      - audit:/audit
+    depends_on:
+      nfs: { condition: service_healthy }
+      pg-core: { condition: service_healthy }
+      pg-europa: { condition: service_healthy }
+      pg-america: { condition: service_healthy }
+    networks:
+      globalnet:
+        ipv4_address: 172.28.0.30
+        aliases: [coordinator.global.local]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import ssl,urllib.request; urllib.request.urlopen('https://coordinator.global.local:8020/health', context=ssl.create_default_context(cafile='/certs/ca.crt'), timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    # Restarts by itself after a crash (chaos crash_after_*): then the recovery loop
+    # finishes the interrupted transactions.
+    restart: unless-stopped
+
   api-1: &api
     build:
       context: .
@@ -222,10 +254,13 @@ services:
       JWKS_URL: https://auth.global.local:8010/.well-known/jwks.json
     volumes:
       - ./infra/certs:/certs:ro
+      # Each instance gets ONLY its own Ed25519 private key (signs requests to the coordinator).
+      - ./infra/keys/private/api-1-ed25519.pem:/keys/private/signing-ed25519.pem:ro
       - audit:/audit
     depends_on:
       nfs: { condition: service_healthy }
       auth: { condition: service_healthy }
+      coordinator: { condition: service_healthy }
     networks:
       globalnet:
         ipv4_address: 172.28.0.11
@@ -245,6 +280,10 @@ services:
       INSTANCE_ID: api-2
       API_DB_PASSWORD: ${API_DB_PASSWORD:-api-pass}
       JWKS_URL: https://auth.global.local:8010/.well-known/jwks.json
+    volumes:
+      - ./infra/certs:/certs:ro
+      - ./infra/keys/private/api-2-ed25519.pem:/keys/private/signing-ed25519.pem:ro
+      - audit:/audit
     networks:
       globalnet:
         ipv4_address: 172.28.0.12
