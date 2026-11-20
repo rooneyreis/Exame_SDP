@@ -2,6 +2,7 @@ import { api } from "../api.js";
 import { icon } from "../icons.js";
 import { $, $$, busy, esc, fieldError } from "../ui.js";
 import { authHero } from "./login.js";
+import { regionName, REGIONS } from "../format.js";
 
 const RULES = [
   [/.{8,}/, "8 ou mais caracteres"],
@@ -33,6 +34,7 @@ export async function render({ root }) {
             <div class="choice-grid" role="radiogroup" aria-label="Região">
               <button type="button" class="choice" role="radio" aria-checked="true" data-region="EU">${icon("globe")}<span class="grow"><b>Europa</b><span>Conta em EUR · Lisboa</span></span></button>
               <button type="button" class="choice" role="radio" aria-checked="false" data-region="AM">${icon("globe")}<span class="grow"><b>América</b><span>Conta em USD · Nova Iorque</span></span></button>
+              <button type="button" class="choice" role="radio" aria-checked="false" data-region="AF">${icon("globe")}<span class="grow"><b>África</b><span>Conta em MZN · Maputo</span></span></button>
             </div>
             <p class="hint">Os seus dados ficam guardados no centro de dados da região escolhida.</p>
           </div>
@@ -89,11 +91,11 @@ export async function render({ root }) {
       root.querySelector(".auth-form").innerHTML = `
         <div class="receipt-icon pending">${icon("clock")}</div>
         <h2 style="text-align:center">Pedido recebido</h2>
-        <p style="text-align:center">Obrigado, ${esc(body.full_name.split(" ")[0])}. A sua identidade será verificada por um operador. Após a aprovação, a sua conta em ${region === "EU" ? "euros" : "dólares"} é aberta automaticamente e pode entrar com o seu email.</p>
+        <p style="text-align:center">Obrigado, ${esc(body.full_name.split(" ")[0])}. A sua identidade será verificada por um operador. Após a aprovação, a sua conta em ${{ EUR: "euros", USD: "dólares", MZN: "meticais" }[REGIONS[region].currency]} é aberta automaticamente e pode entrar com o seu email.</p>
         <div class="card card-pad" style="margin-top:20px"><dl class="kv">
           <dt>Referência do pedido</dt><dd class="mono">${esc(r.id.slice(0, 8).toUpperCase())}</dd>
           <dt>Estado</dt><dd><span class="chip status-pending">${icon("clock")}A aguardar verificação</span></dd>
-          <dt>Região</dt><dd>${region === "EU" ? "Europa" : "América"}</dd>
+          <dt>Região</dt><dd>${regionName(region)}</dd>
         </dl></div>
         <a class="btn btn-secondary btn-block btn-lg" href="#/login" style="margin-top:20px">Voltar ao início</a>`;
     } catch (ex) {

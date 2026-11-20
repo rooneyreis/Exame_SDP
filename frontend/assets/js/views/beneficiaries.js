@@ -1,4 +1,4 @@
-import { iban as fmtIban, initials, REGIONS, regionOf } from "../format.js";
+import { iban as fmtIban, initials, REGIONS, regionOf, regionName, IBAN_RE, IBAN_LOOSE_RE, IBAN_FORMATS, REGION_CODES } from "../format.js";
 import { icon } from "../icons.js";
 import { beneficiaries } from "../store.js";
 import { $, $$, confirmSheet, esc, fieldError, sheet, toast } from "../ui.js";
@@ -17,11 +17,11 @@ function editSheet(existing, onSave) {
   });
   $("#b-ok", s.el).addEventListener("click", async () => {
     const name = $("#b-name", s.el).value.trim();
-    const ib = $("#b-iban", s.el).value.trim().toUpperCase().replace(/\s/g, "").replace(/^GS-?(EU|AM)-?(\d{8})$/, "GS-$1-$2");
+    const ib = $("#b-iban", s.el).value.trim().toUpperCase().replace(/\s/g, "").replace(IBAN_LOOSE_RE, "GS-$1-$2");
     let ok = true;
     fieldError($("#b-name", s.el), name.length >= 2 ? null : "Indique o nome"); ok &&= name.length >= 2;
-    const validIban = /^GS-(EU|AM)-\d{8}$/.test(ib);
-    fieldError($("#b-iban", s.el), validIban ? null : "IBAN inválido (GS-EU-######## ou GS-AM-########)"); ok &&= validIban;
+    const validIban = IBAN_RE.test(ib);
+    fieldError($("#b-iban", s.el), validIban ? null : `IBAN inválido (${IBAN_FORMATS})`); ok &&= validIban;
     if (!ok) return;
     try {
       await beneficiaries.save({ ...(existing || {}), name, iban: ib, nickname: $("#b-nick", s.el).value.trim(), favorite: $("#b-fav", s.el).checked });
@@ -45,17 +45,18 @@ export async function render({ root }) {
       .sort((a, b) => (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0) || a.name.localeCompare(b.name));
     root.innerHTML = `
       ${pageHead("Beneficiários", "Contas para onde transfere com frequência, guardadas na sua conta.", `<button class="btn btn-primary" id="add">${icon("plus")} Novo beneficiário</button>`)}
-      <section class="panel"><div class="metric-strip" style="--n:4">
+      <section class="panel"><div class="metric-strip" style="--n:5">
         <div class="metric"><span class="m-label">${icon("users")} Guardados</span><span class="m-value">${all.length}</span></div>
         <div class="metric"><span class="m-label">${icon("star")} Favoritos</span><span class="m-value">${all.filter((b) => b.favorite).length}</span></div>
         <div class="metric"><span class="m-label">${icon("globe")} Europa</span><span class="m-value">${all.filter((b) => regionOf(b.iban) === "EU").length}</span><span class="m-sub">contas GS-EU</span></div>
         <div class="metric"><span class="m-label">${icon("globe")} América</span><span class="m-value">${all.filter((b) => regionOf(b.iban) === "AM").length}</span><span class="m-sub">contas GS-AM</span></div>
+        <div class="metric"><span class="m-label">${icon("globe")} África</span><span class="m-value">${all.filter((b) => regionOf(b.iban) === "AF").length}</span><span class="m-sub">contas GS-AF</span></div>
       </div></section>
       <section class="panel mt">
         <div class="filters">
           <div class="search">${icon("search")}<input class="input" id="q" type="search" placeholder="Nome, IBAN ou alcunha" value="${esc(f.q)}" aria-label="Pesquisar beneficiários"></div>
           <span class="grow"></span>
-          ${[["all", "Todos"], ["EU", "Europa"], ["AM", "América"]].map(([k, l]) => `<button class="chip-filter" data-region="${k}" aria-pressed="${k === f.region}">${l}</button>`).join("")}
+          ${[["all", "Todos"], ...REGION_CODES.map((r) => [r, regionName(r)])].map(([k, l]) => `<button class="chip-filter" data-region="${k}" aria-pressed="${k === f.region}">${l}</button>`).join("")}
         </div>
         <div class="panel-body" style="padding-top:20px">
         ${all.length ? `<div class="tile-grid">${list.map((b) => {

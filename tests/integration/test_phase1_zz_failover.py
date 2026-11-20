@@ -1,4 +1,4 @@
-"""Phase 1: manual failover of a shard (America) and automatic rejoin of the old primary.
+"""Phase 1: manual failover of a shard (America, África) and automatic rejoin of the old primary.
 
 Full cycle, so the environment ends as it started:
   1. stop the primary → failover.sh promotes the replica
@@ -40,10 +40,11 @@ def rejoin(node: str, new_primary: str) -> None:
     )
 
 
+@pytest.mark.parametrize("region", ["AM", "AF"])
 @pytest.mark.parametrize("cycle", ["failover", "failback"])
-def test_failover_cycle(cycle):
+def test_failover_cycle(region, cycle):
     gid = f"failover-{uuid.uuid4()}"
-    old_primary, new_primary = fail_over("AM", gid)
+    old_primary, new_primary = fail_over(region, gid)
     assert node_role(new_primary) == "primary"
 
     # The prepared transaction was in the WAL, so it survived on the promoted replica:
@@ -51,7 +52,7 @@ def test_failover_cycle(cycle):
     assert local_sql(new_primary, f"SELECT count(*) FROM pg_prepared_xacts WHERE gid = '{gid}'") == "1"
     local_sql(new_primary, f"ROLLBACK PREPARED '{gid}'")
 
-    write_and_read_back("AM")
+    write_and_read_back(region)
 
     rejoin(old_primary, new_primary)
     logs = run(["docker", "logs", old_primary]).stdout + run(["docker", "logs", old_primary]).stderr
@@ -74,3 +75,4 @@ def test_failover_refuses_while_primary_is_running():
 
 def test_topology_is_back_to_original():
     assert current_primary("AM") == ("pg-america", "pg-america-replica")
+    assert current_primary("AF") == ("pg-africa", "pg-africa-replica")

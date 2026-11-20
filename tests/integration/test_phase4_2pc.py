@@ -58,13 +58,13 @@ def events(body):
     return [e["event"] for e in body["events"]]
 
 
-def movements_of(tx_id):
+def movements_of(tx_id, regions=("EU", "AM")):
     return {r: psql(shard_conninfo(r), f"SELECT count(*) FROM movements WHERE tx_id = '{tx_id}'").stdout.strip()
-            for r in ("EU", "AM")}
+            for r in regions}
 
 
 def no_prepared_left():
-    return all(local_sql(n, "SELECT count(*) FROM pg_prepared_xacts") == "0" for n in ("pg-europa", "pg-america"))
+    return all(local_sql(n, "SELECT count(*) FROM pg_prepared_xacts") == "0" for n in ("pg-europa", "pg-america", "pg-africa"))
 
 
 def wait_state(http, users, tx_id, state, timeout):
@@ -249,4 +249,4 @@ def test_only_admin_controls_chaos(http, users):
 def test_consistency_after_everything(http, users):
     result = http.get("/admin/consistency", headers=users["auditor"]).json()
     assert result["ok"], result["problems"]
-    assert result["prepared_xacts"] == {"EU": [], "AM": []}
+    assert result["prepared_xacts"] == {"EU": [], "AM": [], "AF": []}

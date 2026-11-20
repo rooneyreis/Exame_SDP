@@ -1,5 +1,5 @@
 // Peças partilhadas entre páginas.
-import { iban, ibanShort, kindLabel, money, relativeDay } from "../format.js";
+import { iban, ibanShort, kindLabel, money, relativeDay, regionName } from "../format.js";
 import { icon } from "../icons.js";
 import { prefs } from "../store.js";
 import { esc, statusChip } from "../ui.js";
@@ -55,7 +55,7 @@ export function accountCard(a, { href = true } = {}) {
       </div>
       <div class="bal num">${esc(masked(money(a.balance, a.currency)))}</div>
       <div class="iban mono">${esc(iban(a.iban))}</div>
-      <div class="hint" style="margin-top:10px">Conta à ordem · ${a.region === "EU" ? "Europa" : "América"}</div>
+      <div class="hint" style="margin-top:10px">Conta à ordem · ${regionName(a.region)}</div>
     </${tag}>`;
 }
 

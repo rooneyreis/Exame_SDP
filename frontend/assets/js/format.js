@@ -51,13 +51,31 @@ export function ibanShort(value) {
   return value ? `•••• ${value.slice(-4)}` : "";
 }
 
+/** Regiões servidas (espelha GSS_REGIONS do backend): tudo o resto deriva desta tabela. */
 export const REGIONS = {
-  EU: { name: "Europa", flag: "🇪🇺", currency: "EUR", city: "Lisboa" },
-  AM: { name: "América", flag: "🌎", currency: "USD", city: "Nova Iorque" },
+  EU: { name: "Europa", flag: "🇪🇺", currency: "EUR", city: "Lisboa", node: "pg-europa" },
+  AM: { name: "América", flag: "🌎", currency: "USD", city: "Nova Iorque", node: "pg-america" },
+  AF: { name: "África", flag: "🌍", currency: "MZN", city: "Maputo", node: "pg-africa" },
 };
+export const REGION_CODES = Object.keys(REGIONS);
+const CODES = REGION_CODES.join("|");
+/** IBAN completo e válido: GS-EU-00000001 */
+export const IBAN_RE = new RegExp(`^GS-(${CODES})-\\d{8}$`);
+/** IBAN escrito à pressa (sem hífenes): normaliza com .replace(IBAN_LOOSE_RE, "GS-$1-$2") */
+export const IBAN_LOOSE_RE = new RegExp(`^GS-?(${CODES})-?(\\d{8})$`);
+/** IBAN ainda incompleto (pesquisa enquanto se escreve) */
+export const IBAN_PARTIAL_RE = new RegExp(`^GS-?(${CODES})-?(\\d{1,8})$`);
+/** Eventos do 2PC com sufixo de região: PREPARADO_EU, COMMIT_AF… */
+export const REGION_SUFFIX_RE = new RegExp(`_(${CODES})$`);
+/** "GS-EU-########, GS-AM-######## ou GS-AF-########" */
+export const IBAN_FORMATS = REGION_CODES.map((r) => `GS-${r}-########`).join(", ").replace(/, ([^,]*)$/, " ou $1");
+
+export function regionName(code) {
+  return REGIONS[code]?.name || code || "—";
+}
 
 export function regionOf(ibanValue) {
-  const m = /^GS-(EU|AM)-/.exec(ibanValue || "");
+  const m = new RegExp(`^GS-(${CODES})-`).exec(ibanValue || "");
   return m ? m[1] : null;
 }
 

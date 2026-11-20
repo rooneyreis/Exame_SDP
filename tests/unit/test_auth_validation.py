@@ -46,6 +46,7 @@ def test_phone(phone, ok):
 def test_default_currency_by_region():
     assert v.default_currency("EU") == "EUR"
     assert v.default_currency("AM") == "USD"
+    assert v.default_currency("AF") == "MZN"
 
 
 NOW = datetime(2026, 11, 19, 12, 0, tzinfo=timezone.utc)

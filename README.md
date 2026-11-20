@@ -2,7 +2,7 @@
 
 Plataforma distribuída de transações financeiras internacionais de alta disponibilidade. Exame Prático Laboratorial de **Sistemas Distribuídos e Paralelos**, ISUTC, LECC 31.
 
-Clientes da Europa e da América têm os dados em **nós de base de dados diferentes**. Transferências entre regiões são **transações distribuídas com Two-Phase Commit**, com recuperação automática. O sistema continua a funcionar e **nunca fica inconsistente** quando cai um nó ou a rede.
+Clientes da Europa, da América e de África têm os dados em **nós de base de dados diferentes** (um shard por região, cada um com réplica). Transferências entre regiões são **transações distribuídas com Two-Phase Commit**, com recuperação automática. O sistema continua a funcionar e **nunca fica inconsistente** quando cai um nó ou a rede.
 
 | Área do exame | Onde está |
 |---|---|
@@ -10,7 +10,7 @@ Clientes da Europa e da América têm os dados em **nós de base de dados difere
 | Processamento e Transações | coordenador 2PC (`services/coordinator`), shards PostgreSQL com réplicas e failover |
 | Serviços Web e Interoperabilidade | API REST FastAPI + banco parceiro em Java 21 com XML assinado; análise OMG/OMA |
 | Segurança | TLS em tudo, JWT RS256 descentralizado, Ed25519 + SHA-256, AES-256-GCM em repouso, Argon2id |
-| Documentação e Defesa | este README, [`docs/relatorio/`](docs/relatorio/README.md), 13 cenários de demo com evidências |
+| Documentação e Defesa | este README, [`docs/relatorio/`](docs/relatorio/README.md), 14 cenários de demo com evidências |
 
 ## Índice
 
@@ -31,9 +31,11 @@ flowchart TB
     CO --> PC
     CO -- 2PC --> PE[(pg-europa)]
     CO -- 2PC --> PA[(pg-america)]
-    A1 & A2 --> PE & PA
+    CO -- 2PC --> PF[(pg-africa)]
+    A1 & A2 --> PE & PA & PF
     PE -- streaming TLS --> PER[(pg-europa-replica)]
     PA -- streaming TLS --> PAR[(pg-america-replica)]
+    PF -- streaming TLS --> PFR[(pg-africa-replica)]
     NFS[[nfs: /audit]]
     AU & A1 & A2 & CO -. NFS v4 .-> NFS
 ```
@@ -49,6 +51,7 @@ flowchart TB
 | `pg-core` | PostgreSQL 16 | BD `auth` e BD `coordinator` |
 | `pg-europa` (+réplica) | PostgreSQL 16 | shard Europa (`GS-EU-*`) |
 | `pg-america` (+réplica) | PostgreSQL 16 | shard América (`GS-AM-*`) |
+| `pg-africa` (+réplica) | PostgreSQL 16 | shard África (`GS-AF-*`, moeda base MZN) |
 
 ## Requisitos e arranque
 
@@ -61,10 +64,10 @@ flowchart TB
 git clone https://github.com/rooneyreis/Exame_SDP.git ~/global-scale-system && cd ~/global-scale-system
 ./scripts/gen-certs.sh        # CA local + certificado TLS por serviço   (infra/certs, não versionado)
 ./scripts/gen-keys.sh         # RS256 (JWT), Ed25519 (assinaturas), AES-256 (dados em repouso)   (infra/keys)
-docker compose up -d --wait   # 12 contentores
-./scripts/seed.sh             # câmbios, 3 contas por shard, staff e 6 clientes
+docker compose up -d --wait   # 14 contentores
+./scripts/seed.sh             # câmbios, 3 contas por shard, staff e 9 clientes
 make test                     # testes unitários + integração (~5 min)
-./scripts/demo/run-all.sh     # os 13 cenários de demonstração (~4 min)
+./scripts/demo/run-all.sh     # os 14 cenários de demonstração (~5 min)
 ```
 
 Documentação interativa da API: `https://localhost/docs` (OpenAPI gerada pelo FastAPI).
@@ -86,6 +89,7 @@ Rede Docker bridge `globalnet`, subnet `172.28.0.0/24`, IPs fixos. Cada serviço
 | pg-core | 172.28.0.60 | 5432 |
 | pg-europa / réplica | 172.28.0.61 / .62 | 5432 |
 | pg-america / réplica | 172.28.0.63 / .64 | 5432 |
+| pg-africa / réplica | 172.28.0.65 / .66 | 5432 |
 
 ## Sistema de ficheiros distribuído (NFS v4)
 
@@ -106,6 +110,13 @@ Validação (`tests/integration/test_phase0_nfs.py`): dois contentores escrevem 
 | `pg-core` | BD `auth` (utilizadores, refresh tokens) e BD `coordinator` (log 2PC, eventos, câmbios) |
 | `pg-europa` → `pg-europa-replica` | BD `bank` do shard Europa (só IBANs `GS-EU-…`) + réplica streaming |
 | `pg-america` → `pg-america-replica` | BD `bank` do shard América (só IBANs `GS-AM-…`) + réplica streaming |
+| `pg-africa` → `pg-africa-replica` | BD `bank` do shard África (só IBANs `GS-AF-…`, contas em MZN) + réplica streaming |
+
+### Regiões: uma única fonte de verdade
+
+As regiões servidas vêm de `GSS_REGIONS` (`.env` / `docker-compose.yml`, por omissão `EU,AM,AF`). Em `common/db.py`, o padrão do IBAN (`^GS-(EU|AM|AF)-[0-9]{8}$`), os nós de cada shard e a moeda base de cada região (EUR, USD, MZN) são gerados a partir dessa lista. Os tipos dos pedidos (`Literal[REGIONS]`) também, por isso uma região desconhecida dá `422`. No coordenador, `REGION_ORDER = ("EU", "AM", "AF")` é a ordem global de bloqueio, e o serviço recusa arrancar se faltar lá alguma região. No browser, a tabela equivalente está em `frontend/assets/js/format.js`.
+
+Para acrescentar uma região: um par de contentores `pg-<nome>` / `pg-<nome>-replica` no compose, o certificado em `gen-certs.sh` (os existentes são mantidos), a entrada em `REGION_CATALOG` e `REGION_ORDER` e uma migração das constraints de região (`infra/postgres/migrations/*/002_region_africa.sql` é o exemplo).
 
 - **Fragmentação horizontal por região**: a regra está no próprio esquema (`CHECK (iban ~ '^GS-EU-[0-9]{8}$')` no shard EU). Uma conta da região errada é recusada pela BD.
 - **TLS obrigatório**: `pg_hba.conf` só tem `hostssl`. Qualquer ligação sem TLS é rejeitada (`no encryption`). Os clientes usam `sslmode=verify-full`, que verifica a CA e o nome do servidor (SAN). A replicação também corre sobre TLS (TLS 1.3).
@@ -120,7 +131,7 @@ Validação (`tests/integration/test_phase0_nfs.py`): dois contentores escrevem 
 
 ```bash
 docker stop pg-europa
-./scripts/failover.sh EU     # pg_promote() na réplica
+./scripts/failover.sh EU     # pg_promote() na réplica (EU, AM ou AF)
 docker start pg-europa       # volta sozinho como réplica do novo primário
 ```
 
@@ -148,6 +159,7 @@ Utilizadores de demonstração (`./scripts/seed.sh`):
 | `admin@globalscale.test` / `operador@…` / `auditor@…` | admin / operador / auditor | `Staff#2026` |
 | `ana.silva@`, `bruno.costa@`, `carla.mendes@cliente.test` | cliente EU (`GS-EU-00000001..3`) | `Cliente#2026` |
 | `david.smith@`, `emily.johnson@`, `frank.miller@cliente.test` | cliente AM (`GS-AM-00000001..3`) | `Cliente#2026` |
+| `amina.mussa@`, `jorge.macuacua@`, `lurdes.cossa@cliente.test` | cliente AF (`GS-AF-00000001..3`, MZN) | `Cliente#2026` |
 
 ```bash
 TOKEN=$(curl -s --cacert infra/certs/ca.crt https://localhost/auth/login \
@@ -177,7 +189,7 @@ Segurança aplicada:
 | GET | `/health` | público: estado dos shards (nó que responde) e chaves JWKS em cache |
 
 - **Validação JWT descentralizada**: cada instância descarrega o JWKS do auth no arranque e a cada 10 min. Se o auth cair, continua a validar com a chave em cache (cenário 07).
-- **Routing por região** centralizado em `common/db.py`: o prefixo do IBAN (`GS-EU-`/`GS-AM-`) escolhe o pool do shard; o claim `region` do JWT escolhe o shard das contas do utilizador.
+- **Routing por região** centralizado em `common/db.py`: o prefixo do IBAN (`GS-EU-`/`GS-AM-`/`GS-AF-`) escolhe o pool do shard; o claim `region` do JWT escolhe o shard das contas do utilizador.
 - **Movimentos** têm `origin` (`TRANSFERENCIA`/`DEPOSITO`/`LEVANTAMENTO`): depósitos e levantamentos são transações locais do shard, as transferências passam pelo coordenador (Fase 4).
 - **Nginx**: round-robin entre `172.28.0.11` e `172.28.0.12`. `proxy_next_upstream error timeout http_502 http_503`: se uma instância não responde, o pedido é repetido na outra e a falhada fica de fora durante `fail_timeout=10s`. POSTs só são repetidos se nunca chegaram ao backend, por isso um depósito nunca é executado duas vezes. O TLS até aos backends é verificado (`proxy_ssl_verify on`, nome `api.global.local` presente nos dois certificados).
 - Header `X-Served-By` mostra que instância respondeu.
@@ -219,7 +231,7 @@ sequenceDiagram
   - preparadas órfãs nos shards (`tpc_recover`) → decididas pelo log;
   - shard inacessível → nova tentativa com backoff exponencial (1, 2, 4… até 30 s).
 - Transações **em curso** neste processo nunca são tocadas pelo recovery (ex.: a que está em `pause_after_prepare`).
-- **Sem deadlocks distribuídos**: o PREPARE segue sempre a ordem global EU → AM (e por IBAN dentro do mesmo shard). Nenhum PostgreSQL vê os locks do outro, por isso o deadlock não seria detetado: é evitado por ordenação de recursos. `lock_timeout = 5s` fica como segunda barreira.
+- **Sem deadlocks distribuídos**: o PREPARE segue sempre a ordem global EU → AM → AF (e por IBAN dentro do mesmo shard). Numa transferência AF → AM, o crédito em AM é preparado antes do débito em AF. Nenhum PostgreSQL vê os locks do outro, por isso o deadlock não seria detetado: é evitado por ordenação de recursos. `lock_timeout = 5s` fica como segunda barreira.
 - **Idempotência**: `tx_id = uuid5(user_id:Idempotency-Key)`, calculado pela api antes de chamar o coordenador. Se o coordenador morrer, o cliente já sabe o `tx_id` e repete com a mesma chave sem duplicar. Chave reutilizada com outros dados → `409`.
 - **Câmbio**: taxa de `fx_rates` fixada no log no momento da transferência; arredondamento bancário (half-even) ao cêntimo.
 - **Limite diário** verificado dentro do shard, com a conta bloqueada (`FOR UPDATE`), para transferências concorrentes não o ultrapassarem.
@@ -234,7 +246,7 @@ Respostas: `201` CONFIRMADA, `200` repetição idempotente, `202` decisão tomad
 | `{"pause_after_prepare": 20}` | espera 20 s depois do PREPARE, antes da decisão |
 | `{"crash_after_prepare": true}` | `os._exit(1)` antes da decisão → recovery aborta (presumed abort) |
 | `{"crash_after_decision": true}` | `os._exit(1)` depois da decisão → recovery faz COMMIT PREPARED |
-| `{"fail_participant": "EU"}` | esse shard vota NÃO |
+| `{"fail_participant": "EU"}` | esse shard vota NÃO (`EU`, `AM` ou `AF`) |
 | `{"off": true}` | desliga tudo (também volta a off sempre que o coordenador reinicia) |
 
 `GET /admin/consistency` (auditor/admin): cada transação `CONFIRMADA` tem exatamente 1 débito e 1 crédito nos shards certos, as `ABORTADA` não têm movimentos, não há movimentos órfãos nem transações preparadas penduradas.
@@ -368,6 +380,7 @@ Cada script imprime o que vai fazer, executa com `curl --cacert infra/certs/ca.c
 | `11-concorrencia.sh` | 50 transferências concorrentes → 0 deadlocks, dinheiro conservado ao cêntimo |
 | `12-tls.sh` | Postgres sem TLS, HTTP simples, TLS 1.1 e certificado de outro nó → tudo recusado |
 | `13-particao-rede.sh` | `docker network disconnect` do pg-america depois e antes do PREPARE → commit concluído / abort sem débito |
+| `14-regiao-africa.sh` | região África: registo AF → KYC → conta GS-AF em MZN no pg-africa; AF → AF local; 2PC EU → AF (EUR → MZN) e AF → AM (ordem EU → AM → AF); `fail_participant=AF` → rollback da Europa; failover e failback do shard África |
 
 ```bash
 ./scripts/demo/run-all.sh                 # todos, por ordem
@@ -387,7 +400,8 @@ make test        # = ./scripts/test.sh: unitários (sem Docker) e depois integra
 |---|---|---|
 | Unitários (pytest) | `tests/unit/` | routing por região, câmbio (half-even), JSON canónico e assinaturas Ed25519, AES-GCM, JWT (expirado, `alg: none`, kid, adulterado), cadeia de hashes da auditoria, validação de senha/idade, decisões do recovery, contrato XML, agregação do relatório |
 | Integração (pytest + httpx) | `tests/integration/test_phase*.py` | cada fase: NFS com locks, replicação e failover, TLS, auth (bloqueio, refresh, KYC), API, 2PC (commit, abort, presumed abort, crash depois da decisão, idempotência, adulteração), legado Java (XML válido, adulterado, acima do limite, XXE), auditoria, relatório concorrente, estado do cluster |
-| Aceitação | `tests/integration/test_phase*_zz_demos.py` | os 13 cenários de demonstração correm do princípio ao fim |
+| Região África | `tests/integration/test_phase9_africa.py` | routing AF, KYC → GS-AF em MZN, AF → AF, 2PC EU → AF e AF → AM, abort com `fail_participant=AF`, recovery com `docker stop pg-africa` durante `pause_after_prepare`, `/admin/status` e `/admin/consistency` nos 3 shards; o failover AF está em `test_phase1_zz_failover.py` |
+| Aceitação | `tests/integration/test_phase*_zz_demos.py` | os cenários de demonstração correm do princípio ao fim |
 
 Alguns testes correm dentro dos contentores, porque o coordenador e o legado não estão expostos fora da rede: `tests/integration/tamper_client.py` (dentro da api-1) e `tests/integration/legacy_client.py` (dentro do coordinator).
 
@@ -398,7 +412,7 @@ Alguns testes correm dentro dos contentores, porque o coordenador e o legado nã
 | Fragmentação por região com a regra no esquema (`CHECK` no IBAN) e num único sítio do código (`common/db.py`) | dados perto dos clientes; a BD recusa dados da região errada mesmo que a aplicação erre |
 | 2PC (e não Saga) para as transferências | o enunciado exige garantias ACID: nunca débito sem crédito. A Saga daria só consistência eventual |
 | Ponto de decisão = commit de `DECISAO_COMMIT` no pg-core; presumed abort | se não há decisão gravada, ninguém fez commit, por isso abortar é sempre seguro |
-| PREPARE pela ordem global EU → AM (e por IBAN) | evita deadlocks distribuídos, que nenhum PostgreSQL consegue detetar sozinho |
+| PREPARE pela ordem global EU → AM → AF (e por IBAN) | evita deadlocks distribuídos, que nenhum PostgreSQL consegue detetar sozinho |
 | `tx_id = uuid5(utilizador:Idempotency-Key)` calculado pela api | o cliente sabe o `tx_id` mesmo se o coordenador morrer, e pode repetir sem duplicar |
 | Conninfo multi-host (`target_session_attrs=read-write`) | failover transparente para os serviços, sem reconfiguração |
 | Entrypoint Postgres que volta como réplica se o par já for primário | evita split-brain quando o antigo primário regressa |
@@ -427,7 +441,7 @@ Desenvolvidas em [`docs/relatorio/10-limitacoes.md`](docs/relatorio/10-limitacoe
 
 ```
 global-scale-system/
-├── docker-compose.yml          # 12 serviços, rede globalnet, volumes (incl. volume NFS)
+├── docker-compose.yml          # 14 serviços, rede globalnet, volumes (incl. volume NFS)
 ├── Makefile, pytest.ini, requirements-dev.txt
 ├── common/                     # biblioteca Python partilhada (copiada para cada imagem)
 │   ├── crypto.py               # AES-GCM, SHA-256, JSON canónico, Ed25519, pedidos assinados
@@ -452,7 +466,7 @@ global-scale-system/
 │   └── keys/                   # gerado por gen-keys.sh (não versionado)
 ├── scripts/
 │   ├── gen-certs.sh, gen-keys.sh, seed.sh, migrate.sh, failover.sh, test.sh, deploy.sh, rbac-smoke.sh
-│   └── demo/                   # 13 cenários + run-all.sh + lib.sh + concurrency.py
+│   └── demo/                   # 14 cenários + run-all.sh + lib.sh + concurrency.py
 ├── tests/
 │   ├── unit/                   # lógica pura, sem Docker
 │   └── integration/            # contra o ambiente a correr

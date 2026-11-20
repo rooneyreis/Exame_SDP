@@ -2,7 +2,7 @@
 // relatório diário partilhado (NFS) e exportação CSV/PDF.
 import { api } from "../api.js";
 import { barChart } from "../chart.js";
-import { kindLabel, money, number, transferStatus } from "../format.js";
+import { kindLabel, money, number, transferStatus, regionName } from "../format.js";
 import { icon } from "../icons.js";
 import { $, $$, esc } from "../ui.js";
 import { dailySeries, downloadCsv } from "../staff.js";
@@ -53,7 +53,7 @@ export async function render({ root }) {
           </tbody></table></div></section>
         <section class="panel c-5"><div class="panel-head"><h3>Saldos sob custódia</h3></div><div class="panel-body flush">
           <table class="table"><thead><tr><th>Região</th><th>Moeda</th><th class="r">Contas</th><th class="w-money">Total</th></tr></thead><tbody>
-            ${Object.entries(o.balances).flatMap(([reg, rows]) => rows.map((b) => `<tr><td>${reg === "EU" ? "Europa" : "América"}</td><td><span class="cur-badge">${esc(b.currency)}</span></td><td class="r num">${b.accounts}</td><td class="w-money num">${esc(money(b.total, b.currency))}</td></tr>`)).join("")}
+            ${Object.entries(o.balances).flatMap(([reg, rows]) => rows.map((b) => `<tr><td>${regionName(reg)}</td><td><span class="cur-badge">${esc(b.currency)}</span></td><td class="r num">${b.accounts}</td><td class="w-money num">${esc(money(b.total, b.currency))}</td></tr>`)).join("")}
           </tbody></table></div>
           ${daily ? `<div class="panel-foot"><span>Relatório de hoje (NFS): ${Object.keys(daily.updates_by_node || {}).length} nós a escrever · atualizado ${esc((daily.last_update || "").replace("T", " ").slice(0, 16))}</span></div>` : ""}
         </section>

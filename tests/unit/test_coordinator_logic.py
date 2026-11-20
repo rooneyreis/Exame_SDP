@@ -134,3 +134,30 @@ def test_orphan_action(state, age, action):
 
 def test_backoff_is_exponential_and_capped():
     assert [L.backoff_seconds(n) for n in range(0, 8)] == [0, 1, 2, 4, 8, 16, 30, 30]
+
+
+# ---------- região África ----------
+
+def test_region_order_includes_africa_last():
+    assert L.REGION_ORDER == ("EU", "AM", "AF")
+
+
+@pytest.mark.parametrize("src,dst", [("GS-AF-00000001", "GS-EU-00000001"), ("GS-EU-00000001", "GS-AF-00000001"),
+                                     ("GS-AF-00000001", "GS-AM-00000001"), ("GS-AM-00000001", "GS-AF-00000001")])
+def test_participants_follow_the_global_order_with_africa(src, dst):
+    order = [p[0] for p in L.participants(src, dst)]
+    assert order == sorted(order, key=L.REGION_ORDER.index)
+
+
+def test_local_africa_transfer_is_local():
+    assert L.transfer_kind("AF", "AF") == "LOCAL" and L.transfer_kind("AF", "AM") == "DISTRIBUIDA"
+
+
+@pytest.mark.parametrize("amount,rate,expected", [
+    ("100.00", "70.50000000", "7050.00"),     # EUR -> MZN
+    ("6390.00", "0.01564945", "100.00"),      # MZN -> USD
+    ("1.00", "0.01418440", "0.01"),           # MZN -> EUR, rounded half-even to the cent
+    ("0.35", "0.01418440", "0.00"),
+])
+def test_convert_with_mzn(amount, rate, expected):
+    assert L.convert(Decimal(amount), Decimal(rate)) == Decimal(expected)

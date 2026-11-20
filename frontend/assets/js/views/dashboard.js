@@ -5,7 +5,7 @@
 import { session } from "../api.js";
 import { areaChart } from "../chart.js";
 import { activity, balanceSeries, convert, fxRates, movements, myAccounts } from "../data.js";
-import { iban as fmtIban, initials, money, number } from "../format.js";
+import { iban as fmtIban, initials, money, number, regionName, REGIONS } from "../format.js";
 import { icon } from "../icons.js";
 import { beneficiaries, prefs } from "../store.js";
 import { $, $$, esc } from "../ui.js";
@@ -30,7 +30,7 @@ export async function render({ root, claims }) {
   root.innerHTML = `
     <div class="page-head">
       <div><h1>${esc(greeting())}${name ? `, ${esc(name)}` : ""}</h1>
-        <p>${esc(new Intl.DateTimeFormat("pt-PT", { weekday: "long", day: "numeric", month: "long" }).format(new Date()))} · ${accounts.length} ${accounts.length === 1 ? "conta" : "contas"} em ${claims.region === "AM" ? "Nova Iorque" : "Lisboa"}</p></div>
+        <p>${esc(new Intl.DateTimeFormat("pt-PT", { weekday: "long", day: "numeric", month: "long" }).format(new Date()))} · ${accounts.length} ${accounts.length === 1 ? "conta" : "contas"} em ${(REGIONS[claims.region]?.city || "Lisboa")}</p></div>
       <div class="row"><button class="btn btn-secondary" id="hide">${icon(prefs.hideBalances ? "eye" : "eyeOff")} ${prefs.hideBalances ? "Mostrar saldos" : "Ocultar saldos"}</button>
         <a class="btn btn-primary" href="#/transfer">${icon("transfer")} Nova transferência</a></div>
     </div>
@@ -64,7 +64,7 @@ export async function render({ root, claims }) {
           <div class="panel-head"><h3>Contas</h3><a class="link-btn" href="#/accounts">Ver todas</a></div>
           <div class="rows">${accounts.slice(0, 3).map((a) => `
             <a class="r-item" href="#/accounts/${encodeURIComponent(a.iban)}"><span class="cur-badge">${esc(a.currency)}</span>
-              <span style="min-width:0"><span class="r-title mono">${esc(fmtIban(a.iban))}</span><span class="r-sub">${a.status === "ATIVA" ? "Ativa" : "Bloqueada"} · ${a.region === "EU" ? "Europa" : "América"}</span></span>
+              <span style="min-width:0"><span class="r-title mono">${esc(fmtIban(a.iban))}</span><span class="r-sub">${a.status === "ATIVA" ? "Ativa" : "Bloqueada"} · ${regionName(a.region)}</span></span>
               <span class="r-end amount num">${esc(masked(money(a.balance, a.currency)))}</span></a>`).join("")}</div>
         </section>
       </div>

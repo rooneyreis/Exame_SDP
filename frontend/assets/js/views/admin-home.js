@@ -1,7 +1,7 @@
 // Visão global da instituição (Administrador).
 import { api } from "../api.js";
 import { barChart } from "../chart.js";
-import { money, number } from "../format.js";
+import { money, number, regionName } from "../format.js";
 import { icon } from "../icons.js";
 import { esc } from "../ui.js";
 import { bindRowLinks, dailySeries, transfersTable, users } from "../staff.js";
@@ -36,7 +36,7 @@ export async function render({ root, navigate }) {
         <div class="panel-body flush" id="daily"></div></section>
       <section class="panel c-4"><div class="panel-head"><h3>Saldos sob custódia</h3></div>
         <div class="panel-body"><dl class="kv">${Object.entries(o.balances).flatMap(([reg, rows]) => rows.map((b) => `
-          <dt>${reg === "EU" ? "Europa" : "América"} · ${esc(b.currency)} <span class="hint">(${b.accounts} contas${Number(b.blocked) ? `, ${b.blocked} bloqueadas` : ""})</span></dt>
+          <dt>${regionName(reg)} · ${esc(b.currency)} <span class="hint">(${b.accounts} contas${Number(b.blocked) ? `, ${b.blocked} bloqueadas` : ""})</span></dt>
           <dd class="num">${esc(money(b.total, b.currency))}</dd>`)).join("")}</dl>
         <div class="section-title">Limites em vigor</div>
         <dl class="kv"><dt>Máximo por transferência</dt><dd class="num">${esc(number(o.limits.max_transfer_amount))}</dd>

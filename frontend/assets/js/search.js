@@ -1,7 +1,7 @@
 // Pesquisa global (Ctrl/Cmd+K): páginas, contas por IBAN, transferências por referência,
 // beneficiários e (para quem tem permissão) utilizadores e contas de toda a instituição.
 import { api, session } from "./api.js";
-import { iban as fmtIban, money } from "./format.js";
+import { iban as fmtIban, money, IBAN_RE, IBAN_PARTIAL_RE } from "./format.js";
 import { icon } from "./icons.js";
 import { beneficiaries } from "./store.js";
 import { esc } from "./ui.js";
@@ -46,8 +46,8 @@ export function openSearch({ navigate, nav, role }) {
     const pages = nav.flatMap((g) => g.items.map((i) => ({ ...i, group: g.group })))
       .filter((i) => !s || i.label.toLowerCase().includes(s) || i.group.toLowerCase().includes(s))
       .map((i) => ({ icon: i.icon, title: i.label, sub: i.group, to: i.to }));
-    const ibanQ = q.trim().toUpperCase().replace(/\s/g, "").replace(/^GS-?(EU|AM)-?(\d{1,8})$/, "GS-$1-$2");
-    if (/^GS-(EU|AM)-\d{8}$/.test(ibanQ)) groups.push(["Conta", [{ icon: "wallet", title: `Abrir conta ${fmtIban(ibanQ)}`, sub: "Detalhe e extrato", to: `/accounts/${ibanQ}` }]]);
+    const ibanQ = q.trim().toUpperCase().replace(/\s/g, "").replace(IBAN_PARTIAL_RE, "GS-$1-$2");
+    if (IBAN_RE.test(ibanQ)) groups.push(["Conta", [{ icon: "wallet", title: `Abrir conta ${fmtIban(ibanQ)}`, sub: "Detalhe e extrato", to: `/accounts/${ibanQ}` }]]);
     if (UUID.test(q.trim())) groups.push(["Transferência", [{ icon: "doc", title: "Abrir comprovativo", sub: q.trim(), to: `/tx/${q.trim()}` }]]);
     if (s.length >= 2) {
       const accs = data.accounts.filter((a) => a.iban.toLowerCase().includes(s.replace(/\s/g, "")) ||

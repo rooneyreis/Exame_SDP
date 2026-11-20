@@ -1,5 +1,5 @@
 import { api } from "../api.js";
-import { date, dateTime, initials, REGIONS, roleLabel } from "../format.js";
+import { date, dateTime, initials, REGIONS, roleLabel, IBAN_RE, IBAN_LOOSE_RE, regionName, REGION_CODES } from "../format.js";
 import { icon } from "../icons.js";
 import { $, $$, busy, esc, fieldError, sheet, toast } from "../ui.js";
 import { pageHead } from "./common.js";
@@ -17,10 +17,9 @@ async function kyc({ root, claims }) {
     const rows = tab === "pending" ? users : users.filter((u) => u.role === "cliente");
     root.innerHTML = `
       ${pageHead("Abertura de contas", "Verificação de identidade (KYC) dos novos clientes. A aprovação abre a conta no centro de dados da região do cliente.")}
-      <div class="grid g-3" style="margin-bottom:20px">
+      <div class="grid g-4 keep-2" style="margin-bottom:20px">
         <div class="card card-pad stat"><div class="label">${icon("clock")} A aguardar verificação</div><div class="value num" id="n-pending">${tab === "pending" ? rows.length : "—"}</div></div>
-        <div class="card card-pad stat"><div class="label">${icon("globe")} Europa · Lisboa</div><div class="value num">${rows.filter((u) => u.region === "EU").length}</div><div class="delta">${tab === "pending" ? "pedidos pendentes" : "clientes"}</div></div>
-        <div class="card card-pad stat"><div class="label">${icon("globe")} América · Nova Iorque</div><div class="value num">${rows.filter((u) => u.region === "AM").length}</div><div class="delta">${tab === "pending" ? "pedidos pendentes" : "clientes"}</div></div>
+        ${REGION_CODES.map((r) => `<div class="card card-pad stat"><div class="label">${icon("globe")} ${regionName(r)} · ${REGIONS[r].city}</div><div class="value num">${rows.filter((u) => u.region === r).length}</div><div class="delta">${tab === "pending" ? "pedidos pendentes" : "clientes"}</div></div>`).join("")}
       </div>
       <div class="card">
         <div class="toolbar"><div class="segmented" role="group">
@@ -86,7 +85,7 @@ function recent() {
 
 async function accountsLookup({ root, navigate }) {
   root.innerHTML = `
-    ${pageHead("Contas de clientes", "Consulte qualquer conta pelo IBAN. O IBAN indica a região: GS-EU (Lisboa) ou GS-AM (Nova Iorque).")}
+    ${pageHead("Contas de clientes", "Consulte qualquer conta pelo IBAN. O IBAN indica a região: GS-EU (Lisboa), GS-AM (Nova Iorque) ou GS-AF (Maputo).")}
     <form class="card card-pad" id="lookup" novalidate style="max-width:640px">
       <div class="field"><label for="ib">IBAN</label>
         <div class="row"><input class="input mono" id="ib" placeholder="GS-EU-00000001" spellcheck="false" autocomplete="off">
@@ -97,8 +96,8 @@ async function accountsLookup({ root, navigate }) {
   $("#lookup", root).addEventListener("submit", async (e) => {
     e.preventDefault();
     const input = $("#ib", root);
-    const v = input.value.trim().toUpperCase().replace(/\s/g, "").replace(/^GS-?(EU|AM)-?(\d{8})$/, "GS-$1-$2");
-    if (!/^GS-(EU|AM)-\d{8}$/.test(v)) return fieldError(input, "IBAN inválido");
+    const v = input.value.trim().toUpperCase().replace(/\s/g, "").replace(IBAN_LOOSE_RE, "GS-$1-$2");
+    if (!IBAN_RE.test(v)) return fieldError(input, "IBAN inválido");
     try {
       await api(`/accounts/${encodeURIComponent(v)}`);
       localStorage.setItem(RECENT, JSON.stringify([v, ...recent().filter((x) => x !== v)].slice(0, 8)));

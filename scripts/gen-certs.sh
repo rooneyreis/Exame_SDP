@@ -22,9 +22,14 @@ SERVICES=(
   "pg-europa-replica:172.28.0.62"
   "pg-america:172.28.0.63"
   "pg-america-replica:172.28.0.64"
+  "pg-africa:172.28.0.65"
+  "pg-africa-replica:172.28.0.66"
 )
 
-if [[ -f "$OUT/ca.key" && "${1:-}" != "--force" ]]; then
+FORCE=0
+[[ "${1:-}" == "--force" ]] && FORCE=1
+
+if [[ -f "$OUT/ca.key" && $FORCE == 0 ]]; then
   echo "[gen-certs] CA já existe em $OUT (usa --force para regenerar tudo)."
 else
   echo "[gen-certs] A criar a CA local (Global Scale Local CA)..."
@@ -40,6 +45,12 @@ fi
 for entry in "${SERVICES[@]}"; do
   name="${entry%%:*}"
   ip="${entry##*:}"
+  # Existing certificates are kept (a new node does not invalidate the others);
+  # --force regenerates everything, CA included.
+  if [[ $FORCE == 0 && -f "$OUT/$name.crt" && -f "$OUT/$name.key" ]]; then
+    echo "[gen-certs] $name: certificado existente mantido"
+    continue
+  fi
   echo "[gen-certs] Certificado para $name ($name.global.local, $ip)"
 
   openssl genrsa -out "$OUT/$name.key" 2048 2>/dev/null
@@ -72,7 +83,7 @@ EOF
 done
 
 # Java (legacy-bank) reads a PKCS12 keystore; password is not secret in this prototype.
-openssl pkcs12 -export -name legacy-bank \
+[[ -f "$OUT/legacy-bank.p12" && $FORCE == 0 ]] || openssl pkcs12 -export -name legacy-bank \
   -inkey "$OUT/legacy-bank.key" -in "$OUT/legacy-bank.crt" -certfile "$OUT/ca.crt" \
   -passout pass:changeit -out "$OUT/legacy-bank.p12"
 

@@ -5,7 +5,7 @@ Everything here is a decision; the code that talks to the databases is in main.p
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 
-from common.db import is_valid_iban, region_of_iban
+from common.db import REGIONS, is_valid_iban, region_of_iban
 from common.transfers import transfer_tx_id
 
 MAX_AMOUNT = Decimal("10000.00")
@@ -14,10 +14,14 @@ PREPARE_TIMEOUT_SECONDS = 30      # PREPARANDO older than this (and not in fligh
 MAX_CLOCK_SKEW_SECONDS = 300      # signed requests older/newer than this are refused (anti-replay)
 MAX_BACKOFF_SECONDS = 30
 
-# Global lock order for distributed transactions: every transaction prepares EU before AM.
-# Two transfers in opposite directions can never wait for each other in a cycle, so there
-# is no distributed deadlock (which no single PostgreSQL could detect).
-REGION_ORDER = ("EU", "AM")
+# Global lock order for distributed transactions: every transaction prepares EU before AM
+# and AM before AF. Two transfers in opposite directions can never wait for each other in a
+# cycle, so there is no distributed deadlock (which no single PostgreSQL could detect).
+REGION_ORDER = ("EU", "AM", "AF")
+# A region missing from the order would make participants() fail (or, worse, be ordered
+# arbitrarily): refuse to start instead.
+if missing := [r for r in REGIONS if r not in REGION_ORDER]:
+    raise RuntimeError(f"REGION_ORDER não inclui as regiões {missing}")
 
 
 def scoped_idempotency_key(user_id: str, idempotency_key: str) -> str:

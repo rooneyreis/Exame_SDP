@@ -1,6 +1,6 @@
 // Todas as contas (Administrador gere limites e estado; Auditor/Operador consultam).
 import { api } from "../api.js";
-import { iban, money } from "../format.js";
+import { iban, money, regionName } from "../format.js";
 import { icon } from "../icons.js";
 import { $, $$, busy, esc, fieldError, sheet, toast } from "../ui.js";
 import { downloadCsv, exportButtons, users, who } from "../staff.js";
@@ -16,7 +16,7 @@ export async function render({ root, claims, navigate }) {
     <div class="card">
       <div class="toolbar">
         <div class="search">${icon("search")}<input class="input" id="q" type="search" placeholder="IBAN ou titular" aria-label="Pesquisar"></div>
-        <select class="select" id="region" style="width:auto"><option value="">Todas as regiões</option><option value="EU">Europa</option><option value="AM">América</option></select>
+        <select class="select" id="region" style="width:auto"><option value="">Todas as regiões</option><option value="EU">Europa</option><option value="AM">América</option><option value="AF">África</option></select>
         <select class="select" id="status" style="width:auto"><option value="">Todos os estados</option><option value="ATIVA">Ativas</option><option value="BLOQUEADA">Bloqueadas</option></select>
       </div>
       <div id="table"></div>
@@ -31,7 +31,7 @@ export async function render({ root, claims, navigate }) {
       <th class="r">Saldo</th><th class="r hide-sm">Limite diário</th><th>Estado</th>${canManage ? "<th></th>" : ""}</tr></thead><tbody>
       ${rows.map((a) => `<tr class="clickable" data-iban="${esc(a.iban)}">
         <td class="mono">${esc(iban(a.iban))}</td><td>${esc(who(dir, a.user_id))}</td>
-        <td class="hide-sm">${a.region === "EU" ? "Europa" : "América"}</td>
+        <td class="hide-sm">${regionName(a.region)}</td>
         <td class="r num">${esc(money(a.balance, a.currency))}</td><td class="r num hide-sm">${esc(money(a.daily_limit, a.currency))}</td>
         <td><span class="chip ${a.status === "ATIVA" ? "status-done" : "status-failed"}">${a.status === "ATIVA" ? "Ativa" : "Bloqueada"}</span></td>
         ${canManage ? `<td class="r"><button class="btn btn-secondary btn-sm" data-edit="${esc(a.iban)}">${icon("settings")} Gerir</button></td>` : ""}

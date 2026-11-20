@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 
 from common.audit import AuditLog, verify_chain
 from common.crypto import canonical_json, load_ed25519_private, signed_headers
-from common.db import REGIONS, ShardRouter, is_valid_iban, make_pool, region_of_iban, shard_conninfo
+from common.db import REGIONS, SHARD_NODES, ShardRouter, is_valid_iban, make_pool, region_of_iban, shard_conninfo
 from common.jwt_auth import TokenValidator, auth_dependencies, client_ip
 from common.rbac import has_permission
 from common.logging import add_request_logging, log_extra, setup_logging, tx_id_var
@@ -481,9 +481,8 @@ SERVICES_HEALTH = {
     "api-1": "https://api-1.global.local:8000/health",
     "api-2": "https://api-2.global.local:8000/health",
 }
-DB_NODES = {
-    "pg-core": "coordinator", "pg-europa": "bank", "pg-europa-replica": "bank",
-    "pg-america": "bank", "pg-america-replica": "bank",
+DB_NODES = {"pg-core": "coordinator"} | {
+    node.split(".")[0]: "bank" for r in REGIONS for node in SHARD_NODES[r]
 }
 
 

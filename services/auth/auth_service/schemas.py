@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from common.db import IBAN_PATTERN, REGIONS
+
 from . import validation
 
 
@@ -37,14 +39,14 @@ class _PersonFields(BaseModel):
 
 
 class RegisterRequest(_PersonFields):
-    region: Literal["EU", "AM"]
+    region: Literal[REGIONS]
     document_id: str = Field(min_length=5, max_length=40)
     birth_date: date
 
 
 class StaffRequest(_PersonFields):
     role: Literal["operador", "auditor", "admin"]
-    region: Literal["EU", "AM"] = "EU"
+    region: Literal[REGIONS] = "EU"
 
 
 class LoginRequest(BaseModel):
@@ -88,7 +90,6 @@ class StatusChange(BaseModel):
     reason: str | None = Field(default=None, max_length=200)
 
 
-IBAN_PATTERN = r"^GS-(EU|AM)-[0-9]{8}$"
 
 
 class BeneficiaryIn(BaseModel):

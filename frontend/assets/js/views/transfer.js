@@ -1,6 +1,6 @@
 import { api, newIdempotencyKey } from "../api.js";
 import { convert, fxRates, movements, myAccounts } from "../data.js";
-import { iban as fmtIban, kindLabel, money, number, REGIONS, regionOf } from "../format.js";
+import { iban as fmtIban, kindLabel, money, number, REGIONS, regionOf, IBAN_RE, IBAN_LOOSE_RE, IBAN_FORMATS } from "../format.js";
 import { icon } from "../icons.js";
 import { beneficiaries, sentTransfers } from "../store.js";
 import { $, $$, busy, esc, fieldError, sheet, statusChip } from "../ui.js";
@@ -20,11 +20,11 @@ export function friendlyFailure(reason = "") {
   return "A operação não pôde ser concluída e foi anulada. Nenhum valor saiu da sua conta.";
 }
 
-function validIban(v) { return /^GS-(EU|AM)-\d{8}$/.test(v); }
+function validIban(v) { return IBAN_RE.test(v); }
 
 function normalizeIban(v) {
   const s = v.toUpperCase().replace(/[\s]/g, "");
-  const m = /^GS-?(EU|AM)-?(\d{8})$/.exec(s);
+  const m = IBAN_LOOSE_RE.exec(s);
   return m ? `GS-${m[1]}-${m[2]}` : s;
 }
 
@@ -47,7 +47,7 @@ export async function render({ root, query, navigate }) {
   if (pre) { state.mode = "saved"; state.name = pre.name; }
 
   root.innerHTML = `
-    ${pageHead("Transferir", "Para contas Global Scale na Europa e na América. As transferências internacionais são convertidas ao câmbio do dia.")}
+    ${pageHead("Transferir", "Para contas Global Scale na Europa, na América e em África. As transferências internacionais são convertidas ao câmbio do dia.")}
     <div class="transfer-layout">
       <form class="card" id="tf" novalidate>
         <div class="step done" data-step="1">
@@ -83,7 +83,7 @@ export async function render({ root, query, navigate }) {
               <div class="grid g-2" style="gap:14px">
                 <div class="field"><label for="to-iban">IBAN do destinatário</label>
                   <input class="input mono" id="to-iban" placeholder="GS-EU-00000000" autocomplete="off" spellcheck="false" value="${esc(state.mode === "new" ? state.to : "")}">
-                  <p class="hint" id="iban-hint">Formato GS-EU-######## (Europa) ou GS-AM-######## (América)</p></div>
+                  <p class="hint" id="iban-hint">Formato GS-EU-######## (Europa), GS-AM-######## (América) ou GS-AF-######## (África)</p></div>
                 <div class="field"><label for="to-name">Nome do beneficiário</label>
                   <input class="input" id="to-name" placeholder="Nome completo" autocomplete="off" value="${esc(state.mode === "new" ? state.name : "")}"></div>
               </div>
@@ -155,7 +155,7 @@ export async function render({ root, query, navigate }) {
         <span>${e.kind === "DISTRIBUIDA"
           ? `Débito em ${esc(fromR?.city || "")} e crédito em ${esc(toR?.city || "")} confirmados em conjunto: ou acontecem os dois, ou nenhum. O câmbio é fixado no momento da execução; a moeda final depende da conta de destino.`
           : e.kind ? "Transferência imediata entre contas da mesma região."
-          : "Indique o destinatário: as contas GS-EU estão em Lisboa e as GS-AM em Nova Iorque."}</span></div>`;
+          : "Indique o destinatário: as contas GS-EU estão em Lisboa, as GS-AM em Nova Iorque e as GS-AF em Maputo."}</span></div>`;
   }
 
   async function loadTodayDebits() {
@@ -197,7 +197,7 @@ export async function render({ root, query, navigate }) {
   $in("to-iban").addEventListener("blur", () => {
     const v = normalizeIban($in("to-iban").value.trim());
     if (v) $in("to-iban").value = v;
-    fieldError($in("to-iban"), !v || validIban(v) ? null : "IBAN inválido. Use GS-EU-######## ou GS-AM-########.");
+    fieldError($in("to-iban"), !v || validIban(v) ? null : `IBAN inválido. Use ${IBAN_FORMATS}.`);
     drawSummary();
   });
 

@@ -26,6 +26,11 @@ x-postgres: &postgres
     retries: 40
   stop_grace_period: 30s
 
+# Regions served by the system: the single source of truth for the application services
+# (common/db.py derives the IBAN pattern, the shard nodes and the base currency from it).
+x-regions: &regions
+  GSS_REGIONS: ${GSS_REGIONS:-EU,AM,AF}
+
 x-postgres-env: &postgres-env
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
   REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-change-me-too}
@@ -41,6 +46,8 @@ volumes:
   pg-europa-replica-data:
   pg-america-data:
   pg-america-replica-data:
+  pg-africa-data:
+  pg-africa-replica-data:
   legacy-data:
 
   # Distributed file system as seen by the other nodes: an NFS v4 mount of nfs:/audit.
@@ -181,6 +188,50 @@ services:
         ipv4_address: 172.28.0.64
         aliases: [pg-america-replica.global.local]
 
+  pg-africa:
+    <<: *postgres
+    container_name: pg-africa
+    hostname: pg-africa
+    environment:
+      <<: *postgres-env
+      NODE_NAME: pg-africa
+      PEER_HOST: pg-africa-replica.global.local
+      INITIAL_ROLE: primary
+      SHARD_REGION: AF
+    volumes:
+      - pg-africa-data:/var/lib/postgresql/data
+      - ./infra/postgres/init/shard:/docker-entrypoint-initdb.d:ro
+      - ./infra/postgres/entrypoint.sh:/usr/local/bin/gss-entrypoint.sh:ro
+      - ./infra/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./infra/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./infra/certs:/certs:ro
+    networks:
+      globalnet:
+        ipv4_address: 172.28.0.65
+        aliases: [pg-africa.global.local]
+
+  pg-africa-replica:
+    <<: *postgres
+    container_name: pg-africa-replica
+    hostname: pg-africa-replica
+    environment:
+      <<: *postgres-env
+      NODE_NAME: pg-africa-replica
+      PEER_HOST: pg-africa.global.local
+      INITIAL_ROLE: replica
+      SHARD_REGION: AF
+    volumes:
+      - pg-africa-replica-data:/var/lib/postgresql/data
+      - ./infra/postgres/init/shard:/docker-entrypoint-initdb.d:ro
+      - ./infra/postgres/entrypoint.sh:/usr/local/bin/gss-entrypoint.sh:ro
+      - ./infra/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./infra/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./infra/certs:/certs:ro
+    networks:
+      globalnet:
+        ipv4_address: 172.28.0.66
+        aliases: [pg-africa-replica.global.local]
+
   # ---------------- Application services ----------------
   auth:
     build:
@@ -189,6 +240,7 @@ services:
     container_name: auth
     hostname: auth
     environment:
+      <<: *regions
       AUTH_DB_DSN: "host=pg-core.global.local dbname=auth user=auth_svc password=${AUTH_DB_PASSWORD:-auth-pass} sslmode=verify-full sslrootcert=/certs/ca.crt"
       API_URLS: "https://api-1.global.local:8000,https://api-2.global.local:8000"
     volumes:
@@ -240,6 +292,7 @@ services:
     container_name: coordinator
     hostname: coordinator
     environment:
+      <<: *regions
       COORD_DB_PASSWORD: ${COORD_DB_PASSWORD:-coord-pass}
       TRUSTED_SIGNERS: api-1,api-2
     volumes:
@@ -255,6 +308,7 @@ services:
       pg-core: { condition: service_healthy }
       pg-europa: { condition: service_healthy }
       pg-america: { condition: service_healthy }
+      pg-africa: { condition: service_healthy }
     networks:
       globalnet:
         ipv4_address: 172.28.0.30
@@ -275,6 +329,7 @@ services:
     container_name: api-1
     hostname: api-1
     environment:
+      <<: *regions
       INSTANCE_ID: api-1
       API_DB_PASSWORD: ${API_DB_PASSWORD:-api-pass}
       JWKS_URL: https://auth.global.local:8010/.well-known/jwks.json

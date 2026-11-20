@@ -3,7 +3,7 @@
 import { api } from "../api.js";
 import { areaChart } from "../chart.js";
 import { balanceSeries, convert, fxRates, movements, myAccounts } from "../data.js";
-import { date, dateTime, iban, money, originLabel, REGIONS } from "../format.js";
+import { date, dateTime, iban, money, originLabel, REGIONS, regionName } from "../format.js";
 import { icon } from "../icons.js";
 import { $, $$, bindCopy, bindPager, busy, esc, fieldError, pagerHtml, paginate, sheet, toast } from "../ui.js";
 import { masked, pageHead } from "./common.js";
@@ -31,7 +31,7 @@ async function list(root, claims) {
     <div class="bento mt">
       <div class="c-8"><div class="tile-grid">${accounts.map((a, i) => `
         <a class="tile" href="#/accounts/${encodeURIComponent(a.iban)}">
-          <div class="tile-top"><span class="cur-badge">${esc(a.currency)}</span><span class="grow"><span class="name">Conta à ordem</span><span class="meta" style="display:block">${a.region === "EU" ? "Europa" : "América"}</span></span>
+          <div class="tile-top"><span class="cur-badge">${esc(a.currency)}</span><span class="grow"><span class="name">Conta à ordem</span><span class="meta" style="display:block">${regionName(a.region)}</span></span>
             <span class="chip ${a.status === "ATIVA" ? "status-done" : "status-failed"}">${a.status === "ATIVA" ? "Ativa" : "Bloqueada"}</span></div>
           <div><div class="metric" style="padding:0"><span class="m-value">${esc(masked(money(a.balance, a.currency)))}</span></div>
             <div class="mono meta" style="margin-top:6px">${esc(iban(a.iban))}</div></div>
@@ -40,7 +40,7 @@ async function list(root, claims) {
       <aside class="c-4 stack-gap">
         <section class="panel"><div class="panel-head"><div><h3>Dados para receber</h3><div class="sub">partilhe o IBAN para receber transferências</div></div></div>
           <div class="rows">${accounts.map((a) => `<div class="r-item" style="cursor:default"><span class="cur-badge">${esc(a.currency)}</span>
-            <span style="min-width:0"><span class="r-title mono">${esc(iban(a.iban))}</span><span class="r-sub">${a.region === "EU" ? "Europa · Lisboa" : "América · Nova Iorque"}</span></span>
+            <span style="min-width:0"><span class="r-title mono">${esc(iban(a.iban))}</span><span class="r-sub">${regionName(a.region)} · ${REGIONS[a.region]?.city || ""}</span></span>
             <button class="btn btn-ghost btn-icon" data-copy="${esc(a.iban)}" data-copy-label="IBAN copiado" aria-label="Copiar IBAN">${icon("copy")}</button></div>`).join("")}</div>
         </section>
         <section class="panel"><div class="panel-body" style="padding-top:20px"><div class="row" style="align-items:flex-start;gap:14px">
@@ -118,7 +118,7 @@ async function detail(root, accountIban, claims, navigate) {
           <dt>IBAN</dt><dd class="mono">${esc(iban(acc.iban))}</dd>
           <dt>Moeda</dt><dd>${esc(acc.currency)}</dd>
           <dt>Região</dt><dd>${esc(region?.name)} · ${esc(region?.city)}</dd>
-          <dt>Nó de dados</dt><dd class="mono">${acc.region === "EU" ? "pg-europa" : "pg-america"}</dd>
+          <dt>Nó de dados</dt><dd class="mono">${REGIONS[acc.region]?.node || "—"}</dd>
           <dt>Aberta em</dt><dd>${esc(date(acc.created_at))}</dd>
           ${staff ? `<dt>Titular (id)</dt><dd class="mono">${esc(acc.user_id.slice(0, 8))}…</dd>` : ""}
         </dl></div>

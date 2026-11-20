@@ -6,7 +6,7 @@ import pytest
 
 from conftest import current_primary, local_sql, psql, shard_conninfo, wait_until
 
-REGIONS = ["EU", "AM"]
+REGIONS = ["EU", "AM", "AF"]
 
 
 @pytest.mark.parametrize("region", REGIONS)
@@ -61,7 +61,7 @@ def test_prepare_transaction_works(region):
     assert local_sql(primary, f"SELECT count(*) FROM pg_prepared_xacts WHERE gid = '{gid}'") == "0"
 
 
-@pytest.mark.parametrize("node", ["pg-core", "pg-europa", "pg-america"])
+@pytest.mark.parametrize("node", ["pg-core", "pg-europa", "pg-america", "pg-africa"])
 def test_connection_without_tls_is_rejected(node):
     result = psql(f"host={node}.global.local dbname=postgres sslmode=disable", "SELECT 1", check=False)
     assert result.returncode != 0
@@ -87,6 +87,7 @@ def test_certificate_hostname_is_verified():
 NODE_IPS = {
     "pg-europa": "172.28.0.61", "pg-europa-replica": "172.28.0.62",
     "pg-america": "172.28.0.63", "pg-america-replica": "172.28.0.64",
+    "pg-africa": "172.28.0.65", "pg-africa-replica": "172.28.0.66",
 }
 
 
@@ -112,7 +113,7 @@ def test_balance_can_never_be_negative():
     assert "accounts_balance_check" in result.stderr
 
 
-@pytest.mark.parametrize("region,currency", [("EU", "EUR"), ("AM", "USD")])
+@pytest.mark.parametrize("region,currency", [("EU", "EUR"), ("AM", "USD"), ("AF", "MZN")])
 def test_seed_accounts_exist(region, currency):
     seeded = ", ".join(f"'GS-{region}-0000000{i}'" for i in (1, 2, 3))
     out = psql(shard_conninfo(region), f"SELECT count(*), min(currency), max(currency) FROM accounts WHERE iban IN ({seeded})")
@@ -125,7 +126,7 @@ def test_fx_rates_seeded():
 
 
 def test_settings_for_2pc_and_timeouts():
-    for node in ["pg-europa", "pg-europa-replica", "pg-america", "pg-america-replica"]:
+    for node in ["pg-europa", "pg-europa-replica", "pg-america", "pg-america-replica", "pg-africa", "pg-africa-replica"]:
         assert local_sql(node, "SHOW max_prepared_transactions") == "100"
         assert local_sql(node, "SHOW lock_timeout") == "5s"
 

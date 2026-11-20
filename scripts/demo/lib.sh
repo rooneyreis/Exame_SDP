@@ -134,8 +134,8 @@ balance() {  # balance IBAN -> prints the balance (read with the operator's iden
   echo "$b"
 }
 
-prepared_xacts() {  # shows pg_prepared_xacts in both shards
-  for n in pg-europa pg-america; do
+prepared_xacts() {  # shows pg_prepared_xacts in every shard
+  for n in pg-europa pg-america pg-africa; do
     local out
     out=$(docker exec "$n" psql -U postgres -d bank -tAc "SELECT gid || '  (preparada às ' || to_char(prepared, 'HH24:MI:SS') || ')' FROM pg_prepared_xacts" 2>/dev/null || echo "(nó em baixo)")
     info "$n: ${out:-nenhuma}"

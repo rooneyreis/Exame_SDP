@@ -5,6 +5,7 @@ import { $, $$, busy, esc, fieldError } from "../ui.js";
 const DEMO = [
   ["ana.silva@cliente.test", "Cliente#2026", "Ana Silva", "Cliente · Europa"],
   ["david.smith@cliente.test", "Cliente#2026", "David Smith", "Cliente · América"],
+  ["amina.mussa@cliente.test", "Cliente#2026", "Amina Mussa", "Cliente · África"],
   ["operador@globalscale.test", "Staff#2026", "Operador", "Back-office"],
   ["auditor@globalscale.test", "Staff#2026", "Auditor", "Conformidade"],
   ["admin@globalscale.test", "Staff#2026", "Administrador", "Infraestrutura"],
@@ -24,7 +25,7 @@ export function authHero() {
       <span><span class="brand-name">Global Scale</span><br><span class="brand-sub">Banca Internacional</span></span></a>
     <div class="hero-copy">
       <h1>O seu dinheiro,<br>sem fronteiras.</h1>
-      <p>Contas na Europa e na América, transferências nacionais e internacionais com câmbio transparente, e cada operação confirmada de ponta a ponta.</p>
+      <p>Contas na Europa, na América e em África, transferências nacionais e internacionais com câmbio transparente, e cada operação confirmada de ponta a ponta.</p>
     </div>
     <div class="hero-points">
       <div class="hero-point">${icon("lock")}<b>Cifrado de ponta a ponta</b><span>TLS em todas as ligações</span></div>

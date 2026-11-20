@@ -1,7 +1,7 @@
 // Painel do Auditor: fiscalização, rastreabilidade e análise financeira (só leitura).
 import { api } from "../api.js";
 import { barChart } from "../chart.js";
-import { dateTime, money } from "../format.js";
+import { dateTime, money, regionName } from "../format.js";
 import { icon } from "../icons.js";
 import { $, esc } from "../ui.js";
 import { dailySeries, downloadCsv, exportButtons, kpi } from "../staff.js";
@@ -34,7 +34,7 @@ export async function render({ root, navigate }) {
       <section class="card"><div class="card-head"><div><h3>Transferências processadas por dia</h3><p class="hint">últimos 14 dias · ${count((r) => r.state === "CONFIRMADA")} processadas no total</p></div></div><div id="daily"></div></section>
       <section class="card card-pad"><h3>Volumes por região</h3>
         <dl class="kv" style="margin-top:8px">${Object.entries(o.balances).flatMap(([reg, rows]) => rows.map((b) => `
-          <dt>${reg === "EU" ? "Europa" : "América"} · ${esc(b.currency)}</dt><dd class="num">${esc(money(b.total, b.currency))}</dd>`)).join("")}
+          <dt>${regionName(reg)} · ${esc(b.currency)}</dt><dd class="num">${esc(money(b.total, b.currency))}</dd>`)).join("")}
           <dt>Liquidações rejeitadas</dt><dd class="num">${o.settlement.find((s) => s.settlement_status === "REJEITADA")?.n || 0}</dd>
           <dt>Pedidos a aguardar aprovação</dt><dd class="num">${o.pending_approvals.n}</dd></dl>
         <div class="row wrap" style="margin-top:14px;gap:8px"><a class="btn btn-secondary btn-sm" href="#/admin/transfers">${icon("transfer")} Transferências</a>

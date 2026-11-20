@@ -9,6 +9,7 @@ REPO = Path(__file__).resolve().parent.parent
 SHARD_NODES = {
     "EU": ("pg-europa", "pg-europa-replica"),
     "AM": ("pg-america", "pg-america-replica"),
+    "AF": ("pg-africa", "pg-africa-replica"),
 }
 
 

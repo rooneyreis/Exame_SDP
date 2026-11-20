@@ -2,15 +2,15 @@
 // Abaixo do limiar é executada pelo 2PC de imediato; acima fica pendente de aprovação.
 import { api } from "../api.js";
 import { fxRates, convert } from "../data.js";
-import { iban as fmtIban, kindLabel, money, number, REGIONS, regionOf } from "../format.js";
+import { iban as fmtIban, kindLabel, money, number, REGIONS, regionOf, IBAN_RE, IBAN_LOOSE_RE } from "../format.js";
 import { icon } from "../icons.js";
 import { $, $$, busy, esc, fieldError, sheet } from "../ui.js";
 import { requestChip, users, who } from "../staff.js";
 import { friendlyFailure } from "./transfer.js";
 import { pageHead } from "./common.js";
 
-const norm = (v) => v.toUpperCase().replace(/\s/g, "").replace(/^GS-?(EU|AM)-?(\d{8})$/, "GS-$1-$2");
-const valid = (v) => /^GS-(EU|AM)-\d{8}$/.test(v);
+const norm = (v) => v.toUpperCase().replace(/\s/g, "").replace(IBAN_LOOSE_RE, "GS-$1-$2");
+const valid = (v) => IBAN_RE.test(v);
 
 export async function render({ root, navigate }) {
   const [rates, limits, dir] = await Promise.all([fxRates(), api("/admin/settings"), users()]);

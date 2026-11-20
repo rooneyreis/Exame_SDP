@@ -25,7 +25,7 @@ CREATE TABLE users (
   email           TEXT NOT NULL UNIQUE,
   phone           TEXT NOT NULL UNIQUE,
   password_hash   TEXT NOT NULL,                       -- Argon2id
-  region          TEXT NOT NULL CHECK (region IN ('EU','AM')),
+  region          TEXT NOT NULL CHECK (region IN ('EU','AM','AF')),
   document_id_enc BYTEA,                               -- AES-256-GCM: nonce || ciphertext
   birth_date_enc  BYTEA,                               -- AES-256-GCM: nonce || ciphertext
   role            TEXT NOT NULL CHECK (role IN ('cliente','operador','auditor','admin')),
@@ -55,8 +55,8 @@ CREATE TABLE transactions (
   user_id           UUID NOT NULL,
   from_iban         TEXT NOT NULL,
   to_iban           TEXT NOT NULL,
-  from_region       TEXT NOT NULL CHECK (from_region IN ('EU','AM')),
-  to_region         TEXT NOT NULL CHECK (to_region IN ('EU','AM')),
+  from_region       TEXT NOT NULL CHECK (from_region IN ('EU','AM','AF')),
+  to_region         TEXT NOT NULL CHECK (to_region IN ('EU','AM','AF')),
   amount            NUMERIC(18,2) NOT NULL CHECK (amount > 0),
   from_currency     TEXT NOT NULL,
   to_currency       TEXT NOT NULL,

@@ -1,6 +1,6 @@
 // Beneficiários dos clientes (Operador e Administrador gerem; Auditor consulta).
 import { api } from "../api.js";
-import { dateTime, iban } from "../format.js";
+import { dateTime, iban, IBAN_RE, IBAN_LOOSE_RE } from "../format.js";
 import { icon } from "../icons.js";
 import { $, $$, busy, confirmSheet, esc, fieldError, sheet, toast } from "../ui.js";
 import { users, who } from "../staff.js";
@@ -50,8 +50,8 @@ export async function render({ root, claims }) {
       footer: `<button class="btn btn-secondary" data-close>Cancelar</button><button class="btn btn-primary" id="b-save">Guardar</button>`,
     });
     $("#b-save", s.el).addEventListener("click", async (e) => {
-      const ib = $("#b-iban", s.el).value.trim().toUpperCase().replace(/\s/g, "").replace(/^GS-?(EU|AM)-?(\d{8})$/, "GS-$1-$2");
-      if (!/^GS-(EU|AM)-\d{8}$/.test(ib)) return fieldError($("#b-iban", s.el), "IBAN inválido");
+      const ib = $("#b-iban", s.el).value.trim().toUpperCase().replace(/\s/g, "").replace(IBAN_LOOSE_RE, "GS-$1-$2");
+      if (!IBAN_RE.test(ib)) return fieldError($("#b-iban", s.el), "IBAN inválido");
       busy(e.currentTarget, true);
       try {
         await api("/admin/beneficiaries", { method: "POST", body: { owner_id: $("#b-owner", s.el).value, name: $("#b-name", s.el).value.trim(), iban: ib } });

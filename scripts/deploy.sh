@@ -30,7 +30,7 @@ mem_gb=$(awk '/MemTotal/ {printf "%.1f", $2/1024/1024}' /proc/meminfo)
 cpus=$(nproc)
 disk_gb=$(df -BG --output=avail / | tail -1 | tr -dc 0-9)
 echo "  CPU: $cpus · RAM: ${mem_gb} GB · disco livre: ${disk_gb} GB"
-awk "BEGIN{exit !($mem_gb < 3.5)}" && die "São precisos pelo menos 4 GB de RAM (recomendado 8 GB): 12 contentores, incluindo 5 PostgreSQL e uma JVM."
+awk "BEGIN{exit !($mem_gb < 3.5)}" && die "São precisos pelo menos 4 GB de RAM (recomendado 8 GB): 14 contentores, incluindo 7 PostgreSQL e uma JVM."
 awk "BEGIN{exit !($mem_gb < 7)}" && warn "Com menos de 8 GB funciona, mas os cenários de falha e concorrência podem ficar lentos."
 (( disk_gb >= 10 )) || die "São precisos pelo menos 10 GB livres em disco (imagens Docker + bases de dados)."
 ok "máquina adequada"

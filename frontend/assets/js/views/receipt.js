@@ -1,7 +1,7 @@
 // Comprovativo de uma operação: transferência (dados do coordenador) ou movimento local.
 import { api } from "../api.js";
 import { activity, myAccounts, transfer } from "../data.js";
-import { dateTime, iban, kindLabel, money, number, REGIONS, regionOf, settlementLabel, time, transferStatus } from "../format.js";
+import { dateTime, iban, kindLabel, money, number, REGIONS, regionOf, settlementLabel, time, transferStatus, REGION_SUFFIX_RE } from "../format.js";
 import { icon } from "../icons.js";
 import { beneficiaries, sentTransfers } from "../store.js";
 import { $, bindCopy, esc, statusChip } from "../ui.js";
@@ -12,7 +12,7 @@ import { ROLE_LABEL, users, who } from "../staff.js";
 function trackStep(ev, tx) {
   const e = ev.event;
   const reg = (code) => REGIONS[code]?.name || code;
-  const m = /_(EU|AM)$/.exec(e);
+  const m = REGION_SUFFIX_RE.exec(e);
   const r = m ? m[1] : null;
   if (e === "INICIADA") return { label: "Ordem recebida e validada", desc: "Assinatura digital verificada", tone: "ok" };
   if (e === "PREPARANDO") return { label: "Reserva de fundos iniciada", desc: "As duas contas vão ser verificadas", tone: "ok" };

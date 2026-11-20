@@ -2,7 +2,7 @@
 //   barra lateral recolhível · cabeçalho (trilho, pesquisa global, notificações, perfil) · conteúdo
 //   barra de separadores no telemóvel.
 import { logout, session } from "./api.js";
-import { initials, relativeDay, roleLabel } from "./format.js";
+import { initials, relativeDay, roleLabel, regionName } from "./format.js";
 import { icon, LOGO } from "./icons.js";
 import { markRead, notifications, unread } from "./notify.js";
 import { openSearch } from "./search.js";
@@ -200,7 +200,7 @@ function shell(claims) {
         <button class="collapse-btn" id="collapse" title="Recolher / expandir a barra lateral" aria-label="Recolher a barra lateral">${icon("chevronLeft")}<span>Recolher</span></button>
         <div class="user-chip">
           <span class="avatar" title="${esc(name)}">${esc(initials(name))}</span>
-          <span class="who"><b>${esc(name)}</b><span>${esc(claims.role === "cliente" ? `Cliente · ${claims.region === "EU" ? "Europa" : "América"}` : roleLabel(claims.role))}</span></span>
+          <span class="who"><b>${esc(name)}</b><span>${esc(claims.role === "cliente" ? `Cliente · ${regionName(claims.region)}` : roleLabel(claims.role))}</span></span>
           <button class="btn btn-ghost btn-icon" id="logout" aria-label="Terminar sessão" title="Terminar sessão">${icon("logout")}</button>
         </div>
       </div>

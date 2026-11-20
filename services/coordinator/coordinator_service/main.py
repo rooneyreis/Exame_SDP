@@ -247,7 +247,7 @@ async def run_2pc(tx: dict) -> None:
         await event(tx_id, "PAUSA_CHAOS_ANTES_PREPARE", seconds=chaos.pause_before_prepare)
         await asyncio.sleep(chaos.pause_before_prepare)
 
-    # ---- Phase 1: PREPARE, one shard after the other in the global order (EU, AM) ----
+    # ---- Phase 1: PREPARE, one shard after the other in the global order (EU, AM, AF) ----
     failure = None
     for region, side, iban in logic.participants(tx["from_iban"], tx["to_iban"]):
         try:

@@ -1,20 +1,40 @@
 """Database access shared by the services: routing by region and connection pools.
 
 THE fragmentation rule of the system lives here (and only here):
-  - an IBAN carries its region in the prefix: GS-EU-xxxxxxxx -> shard Europa, GS-AM-... -> shard América
+  - an IBAN carries its region in the prefix: GS-EU-xxxxxxxx -> shard Europa, GS-AM-... -> shard
+    América, GS-AF-... -> shard África
   - a user carries its region in the JWT claim "region" (chosen at registration)
+
+Single source of truth for the regions: the GSS_REGIONS setting (.env / docker-compose,
+default "EU,AM,AF"). Everything else (IBAN pattern, shard nodes, base currency, the
+Literal types of the request schemas) is derived from it.
 """
+import os
 import re
 
-REGIONS = ("EU", "AM")
-IBAN_RE = re.compile(r"^GS-(EU|AM)-[0-9]{8}$")
+# Every region the system knows how to run: shard node name, base currency, display name.
+REGION_CATALOG = {
+    "EU": {"node": "pg-europa", "currency": "EUR", "name": "Europa"},
+    "AM": {"node": "pg-america", "currency": "USD", "name": "América"},
+    "AF": {"node": "pg-africa", "currency": "MZN", "name": "África"},
+}
+
+REGIONS = tuple(r.strip().upper() for r in os.environ.get("GSS_REGIONS", "EU,AM,AF").split(",") if r.strip())
+if unknown := [r for r in REGIONS if r not in REGION_CATALOG]:
+    raise RuntimeError(f"GSS_REGIONS tem regiões desconhecidas: {unknown}")
+
+IBAN_PATTERN = rf"^GS-({'|'.join(REGIONS)})-[0-9]{{8}}$"
+IBAN_RE = re.compile(IBAN_PATTERN)
 
 # Nodes of each shard: (initial primary, initial replica). After a failover the roles
 # swap, which is why the conninfo lists both and lets libpq pick the writable one.
 SHARD_NODES = {
-    "EU": ("pg-europa.global.local", "pg-europa-replica.global.local"),
-    "AM": ("pg-america.global.local", "pg-america-replica.global.local"),
+    r: (f"{REGION_CATALOG[r]['node']}.global.local", f"{REGION_CATALOG[r]['node']}-replica.global.local")
+    for r in REGIONS
 }
+
+# Currency of the accounts opened in each region (KYC default).
+REGION_CURRENCY = {r: REGION_CATALOG[r]["currency"] for r in REGIONS}
 
 
 def is_valid_iban(iban: str) -> bool:

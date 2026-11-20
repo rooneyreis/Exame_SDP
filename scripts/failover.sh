@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Manual failover of one region: promotes that region's replica to primary.
-# Usage: ./scripts/failover.sh EU|AM
+# Usage: ./scripts/failover.sh EU|AM|AF
 #
 # It promotes whichever node of the region is currently a running standby, so it
 # also works after roles have already been swapped once. It refuses to promote
@@ -12,7 +12,8 @@ set -euo pipefail
 case "${1:-}" in
   EU) NODES=(pg-europa pg-europa-replica) ;;
   AM) NODES=(pg-america pg-america-replica) ;;
-  *) echo "Uso: $0 EU|AM" >&2; exit 2 ;;
+  AF) NODES=(pg-africa pg-africa-replica) ;;
+  *) echo "Uso: $0 EU|AM|AF" >&2; exit 2 ;;
 esac
 
 # Prints t (standby), f (primary) or "down".

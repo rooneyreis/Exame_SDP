@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# Shard primary (pg-europa / pg-america): database "bank" with accounts and movements.
+# Shard primary (pg-europa / pg-america / pg-africa): database "bank" with accounts and movements.
 # Runs once, on the first start of the PRIMARY. Replicas receive everything
 # (roles included) through pg_basebackup + streaming replication.
-# SHARD_REGION (EU|AM) makes the fragmentation rule explicit in the schema.
+# SHARD_REGION (EU|AM|AF) makes the fragmentation rule explicit in the schema.
 set -euo pipefail
 echo "[init:shard-$SHARD_REGION] a criar roles e base de dados bank"
+# Daily limit per account, in the shard currency: 50 000 EUR/USD; the MZN shard uses the
+# equivalent order of magnitude (x50), like its opening balances.
+DAILY_LIMIT=50000
+[[ "$SHARD_REGION" == "AF" ]] && DAILY_LIMIT=2500000
 
 psql -v ON_ERROR_STOP=1 -U postgres -d postgres <<SQL
 CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD '${REPLICATION_PASSWORD}';
@@ -23,7 +27,7 @@ CREATE TABLE accounts (
   currency    TEXT NOT NULL CHECK (currency IN ('EUR','USD','MZN')),
   balance     NUMERIC(18,2) NOT NULL DEFAULT 0 CHECK (balance >= 0),
   status      TEXT NOT NULL DEFAULT 'ATIVA' CHECK (status IN ('ATIVA','BLOQUEADA')),
-  daily_limit NUMERIC(18,2) NOT NULL DEFAULT 50000,
+  daily_limit NUMERIC(18,2) NOT NULL DEFAULT ${DAILY_LIMIT},
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX accounts_user_idx ON accounts (user_id);

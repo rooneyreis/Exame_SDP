@@ -16,6 +16,7 @@ const SERVICE_INFO = {
 const DB_INFO = {
   "pg-core": "Identidades e registo de transações", "pg-europa": "Contas Europa", "pg-europa-replica": "Contas Europa (réplica)",
   "pg-america": "Contas América", "pg-america-replica": "Contas América (réplica)",
+  "pg-africa": "Contas África", "pg-africa-replica": "Contas África (réplica)",
 };
 
 async function infra({ root }) {
@@ -48,6 +49,7 @@ async function infra({ root }) {
           ${[["Pausa de 20 s após reservar", '{"pause_after_prepare":20}', "clock"],
              ["Falha na Europa", '{"fail_participant":"EU"}', "x"],
              ["Falha na América", '{"fail_participant":"AM"}', "x"],
+             ["Falha em África", '{"fail_participant":"AF"}', "x"],
              ["Crash antes da decisão", '{"crash_after_prepare":true}', "bolt"],
              ["Crash após a decisão", '{"crash_after_decision":true}', "bolt"]]
             .map(([l, m, i]) => `<button class="choice" data-chaos='${m}'>${icon(i)}<span class="grow"><b>${l}</b><span class="mono">${esc(m)}</span></span></button>`).join("")}

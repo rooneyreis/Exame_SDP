@@ -1,5 +1,5 @@
 import { api } from "../api.js";
-import { dateTime, money } from "../format.js";
+import { dateTime, money, regionName, REGION_CODES } from "../format.js";
 import { icon } from "../icons.js";
 import { $, busy, esc } from "../ui.js";
 import { pageHead } from "./common.js";
@@ -36,7 +36,7 @@ export async function render({ root, navigate }) {
         <dt>Processadas</dt><dd class="num">${c.confirmed}</dd>
         <dt>Anuladas</dt><dd class="num">${c.aborted}</dd>
         <dt>Em curso</dt><dd class="num">${c.in_progress.length}</dd>
-        <dt>Reservas pendentes (EU / AM)</dt><dd class="num">${c.prepared_xacts.EU.length} / ${c.prepared_xacts.AM.length}</dd>
+        <dt>Reservas pendentes (${REGION_CODES.join(" / ")})</dt><dd class="num">${REGION_CODES.map((r) => (c.prepared_xacts[r] || []).length).join(" / ")}</dd>
       </dl>
       ${c.problems.length ? `<div class="banner banner-bad" style="margin-top:14px">${icon("alert")}<span>${esc(JSON.stringify(c.problems.slice(0, 3)))}</span></div>` : ""}`;
     $("#re-c", root).addEventListener("click", consistency);
@@ -76,7 +76,7 @@ export async function render({ root, navigate }) {
           <div class="stat"><div class="label">Internacionais</div><div class="value num">${r.transfers.by_kind.DISTRIBUIDA || 0}</div></div>
         </div>
         <div class="table-wrap" style="padding:0 8px 8px"><table class="table"><thead><tr><th>Região</th><th class="r">Volume transferido</th><th class="r">Depósitos</th><th class="r">Levantamentos</th></tr></thead><tbody>
-          ${["EU", "AM"].map((reg) => `<tr><td>${reg === "EU" ? "Europa" : "América"}</td>
+          ${REGION_CODES.map((reg) => `<tr><td>${regionName(reg)}</td>
             <td class="r num">${Object.entries(r.transfers.volume_by_region[reg] || {}).map(([c, v]) => esc(money(v, c))).join("<br>") || "—"}</td>
             <td class="r num">${cash.DEPOSITO?.[reg]?.count || 0}</td><td class="r num">${cash.LEVANTAMENTO?.[reg]?.count || 0}</td></tr>`).join("")}
         </tbody></table></div>

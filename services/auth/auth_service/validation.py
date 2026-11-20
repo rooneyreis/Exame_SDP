@@ -2,6 +2,8 @@
 import re
 from datetime import date, datetime, timedelta
 
+from common.db import REGION_CURRENCY
+
 MIN_AGE = 18
 MAX_FAILED_ATTEMPTS = 5
 LOCK_DURATION = timedelta(minutes=15)
@@ -44,7 +46,7 @@ def is_valid_phone(phone: str) -> bool:
 
 
 def default_currency(region: str) -> str:
-    return {"EU": "EUR", "AM": "USD"}[region]
+    return REGION_CURRENCY[region]
 
 
 def is_locked(locked_until: datetime | None, now: datetime) -> bool:

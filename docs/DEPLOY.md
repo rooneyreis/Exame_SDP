@@ -10,7 +10,7 @@
 | Sistema | Ubuntu 22.04 / 24.04 | Ubuntu 24.04 |
 | Portas abertas no fornecedor | 22, 443 | 22, 80, 443 |
 
-Com 1 GB de RAM **não corre**: são 12 contentores (5 PostgreSQL, uma JVM, 4 serviços Python, NFS e nginx).
+Com 1 GB de RAM **não corre**: são 14 contentores (7 PostgreSQL, uma JVM, 4 serviços Python, NFS e nginx).
 
 ## Instalação (um comando)
 
@@ -27,7 +27,7 @@ O script (`scripts/deploy.sh`) pode ser repetido sem perder dados. Faz por esta 
 3. clona o repositório (ou faz `git pull`);
 4. gera o `.env` com **senhas internas aleatórias**, a CA local e os certificados (o do nginx inclui o IP público) e as chaves RS256/Ed25519/AES;
 5. ativa a firewall (`ufw`): SSH, 80 e 443;
-6. constrói as imagens e arranca os 12 contentores;
+6. constrói as imagens e arranca os 14 contentores;
 7. cria os dados de demonstração;
 8. verifica a interface e a API e mostra o endereço.
 
@@ -67,7 +67,7 @@ Sem domínio, o certificado é emitido pela CA local do projeto, por isso o brow
 ```bash
 cd ~/global-scale-system
 make test                          # suite completa (~5 min)
-PAUSE=1 ./scripts/demo/run-all.sh  # os 13 cenários com pausas
+PAUSE=1 ./scripts/demo/run-all.sh  # os 14 cenários com pausas
 ```
 
 ## Problemas comuns

@@ -27,7 +27,10 @@ export const session = {
   },
   set(tokens, profile = {}) {
     const claims = decodeJwt(tokens.access_token);
-    const value = { access: tokens.access_token, refresh: tokens.refresh_token, claims, profile: { ...(this.get()?.profile || {}), ...profile } };
+    // O perfil guardado só é reaproveitado quando é o mesmo utilizador (renovação do token).
+    const prev = this.get();
+    const kept = prev?.claims?.sub === claims.sub ? prev.profile || {} : {};
+    const value = { access: tokens.access_token, refresh: tokens.refresh_token, claims, profile: { ...kept, ...profile } };
     sessionStorage.setItem(KEY, JSON.stringify(value));
     return value;
   },
