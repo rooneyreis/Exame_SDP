@@ -1,0 +1,66 @@
+
+══════ Cenário 08 — Queda do primário de um shard e failover ══════
+(2026-11-20T00:09:31Z)
+
+▶ 1. Situação inicial
+    pg-europa: primário (réplicas a receber: 1)
+    pg-europa-replica: réplica (réplicas a receber: 0)
+  POST /auth/login -> HTTP 200
+  POST /transfers -> HTTP 201 (X-Served-By: api-2)
+  ✔ transferência EU → EU funciona (HTTP 201)
+
+▶ 2. Derrubar o primário pg-europa
+  $ docker stop pg-europa
+    pg-europa: EM BAIXO
+    pg-europa-replica: réplica (réplicas a receber: 0)
+  POST /transfers -> HTTP 503 (X-Served-By: api-2)
+  durante a falha: HTTP 503 — shard indisponível
+  ✔ sem primário na Europa não há escritas (a réplica só aceita leituras)
+  GET /accounts -> HTTP 200 (X-Served-By: api-1)
+  ✔ leituras continuam a funcionar a partir da réplica (target_session_attrs=any) (HTTP 200)
+    [
+      {
+        "iban": "GS-EU-00000001",
+        "balance": "7530.58"
+      }
+    ]
+
+▶ 3. Failover: promover a réplica
+  $ ./scripts/failover.sh EU
+    [failover] pg-europa: em baixo
+    [failover] pg-europa-replica: réplica
+    [failover] A promover pg-europa-replica com pg_promote()...
+    [failover] OK: pg-europa-replica é agora o PRIMÁRIO da região EU.
+    [failover] As transações preparadas que estavam no WAL continuam lá:
+    0 preparada(s) pendente(s)
+    [failover] Quando o nó antigo voltar (docker start), junta-se automaticamente como réplica.
+    pg-europa: EM BAIXO
+    pg-europa-replica: primário (réplicas a receber: 0)
+
+▶ 4. As transferências voltam a funcionar, sem mudar configuração nenhuma
+  (os serviços ligam-se com host=pg-europa…,pg-europa-replica… target_session_attrs=read-write)
+  POST /transfers -> HTTP 201 (X-Served-By: api-1)
+  ✔ LOCAL EU → EU no novo primário (HTTP 201)
+  POST /transfers -> HTTP 201 (X-Served-By: api-2)
+  ✔ DISTRIBUIDA EU → AM (2PC) no novo primário (HTTP 201)
+  GET /health -> HTTP 200 (X-Served-By: api-1)
+  a api liga-se agora a: 172.28.0.62 (pg-europa-replica = 172.28.0.62)
+
+▶ 5. O antigo primário volta e junta-se sozinho como réplica (sem split-brain)
+  $ docker start pg-europa
+    [pg-entrypoint:pg-europa] AVISO: pg-europa-replica.global.local já é primário (houve failover). Este nó volta como réplica.
+    [pg-entrypoint:pg-europa] a clonar dados de pg-europa-replica.global.local com pg_basebackup (TLS verify-full)...
+    [pg-entrypoint:pg-europa] clone concluído: este nó arranca como RÉPLICA (standby) de pg-europa-replica.global.local
+    pg-europa: réplica (réplicas a receber: 0)
+    pg-europa-replica: primário (réplicas a receber: 1)
+  GET /admin/consistency -> HTTP 200 (X-Served-By: api-1)
+    {"ok":true,"checked_transactions":296,"confirmed":279,"aborted":17,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[]},"problems":[]}
+  ✔ /admin/consistency OK: sem dinheiro perdido nem duplicado
+
+▶ 6. Repor a topologia original (failback)
+    pg-europa: primário (réplicas a receber: 1)
+    pg-europa-replica: réplica (réplicas a receber: 0)
+  ✔ pg-europa é de novo o primário
+
+══════ Cenário 08 concluído ══════
+(2026-11-20T00:09:54Z)

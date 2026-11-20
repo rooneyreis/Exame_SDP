@@ -26,3 +26,8 @@ def test_conninfo_lists_both_nodes_and_requires_writable_tls():
 
 def test_conninfo_america():
     assert "host=pg-america.global.local,pg-america-replica.global.local" in shard_conninfo("AM", "u", "p", "ca")
+
+
+def test_read_only_conninfo_accepts_the_replica():
+    assert "target_session_attrs=any" in shard_conninfo("EU", "u", "p", "ca", read_only=True)
+    assert "keepalives=1" in shard_conninfo("EU", "u", "p", "ca") and "tcp_user_timeout=8000" in shard_conninfo("EU", "u", "p", "ca")

@@ -20,6 +20,7 @@ class TransferRequest(BaseModel):
 
 
 class ChaosRequest(BaseModel):
+    pause_before_prepare: int | None = Field(default=None, ge=0, le=120)
     pause_after_prepare: int | None = Field(default=None, ge=0, le=120)
     crash_after_prepare: bool | None = None
     crash_after_decision: bool | None = None

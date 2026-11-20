@@ -1,51 +1,51 @@
 
 ══════ Cenário 10 — Crash do coordenador depois da decisão ══════
-(2026-11-19T23:59:00Z)
-  saldos antes: GS-AM-00000001=10619.54 USD   GS-EU-00000002=4659.60 EUR
+(2026-11-20T00:09:03Z)
+  saldos antes: GS-AM-00000001=10961.71 USD   GS-EU-00000002=4618.80 EUR
 
 ▶ 1. Ativar crash_after_decision
   POST /admin/chaos -> HTTP 200 (X-Served-By: api-2)
-  chaos no coordenador: {"pause_after_prepare":0,"crash_after_prepare":false,"crash_after_decision":true,"fail_participant":null}
+  chaos no coordenador: {"pause_before_prepare":0,"pause_after_prepare":0,"crash_after_prepare":false,"crash_after_decision":true,"fail_participant":null}
 
 ▶ 2. O David transfere 50.00 USD para o Bruno — o coordenador morre a meio
   POST /auth/login -> HTTP 200
   POST /transfers -> HTTP 503 (X-Served-By: api-1)
     {
       "detail": "coordenador indisponível: repita o pedido com a mesma Idempotency-Key",
-      "tx_id": "072bab35-d2ec-5507-b8a3-b69bc711416a"
+      "tx_id": "bb7d313a-da74-5db0-a623-5369da144119"
     }
-  ✔ a api respondeu 503 mas devolveu o tx_id (072bab35-d2ec-5507-b8a3-b69bc711416a)
+  ✔ a api respondeu 503 mas devolveu o tx_id (bb7d313a-da74-5db0-a623-5369da144119)
   logs do coordenador antes de morrer:
     [DECISAO_COMMIT]
     CHAOS: crash depois da DECISAO_COMMIT, antes dos COMMIT PREPARED
   transações preparadas à espera de decisão:
-  pg-europa: 1_MDcyYmFiMzUtZDJlYy01NTA3LWI4YTMtYjY5YmM3MTE0MTZh_RVU=  (preparada às 23:59:00)
-  pg-america: 1_MDcyYmFiMzUtZDJlYy01NTA3LWI4YTMtYjY5YmM3MTE0MTZh_QU0=  (preparada às 23:59:00)
+  pg-europa: 1_YmI3ZDMxM2EtZGE3NC01ZGIwLWE2MjMtNTM2OWRhMTQ0MTE5_RVU=  (preparada às 00:09:03)
+  pg-america: 1_YmI3ZDMxM2EtZGE3NC01ZGIwLWE2MjMtNTM2OWRhMTQ0MTE5_QU0=  (preparada às 00:09:03)
 
 ▶ 3. O Docker reinicia o coordenador sozinho
   ✔ RestartCount: 2 → 3
   ✔ coordinator está healthy
 
 ▶ 4. O recovery loop encontra DECISAO_COMMIT no log e conclui a transação
-    23:59:00.694  INICIADA   {"kind":"DISTRIBUIDA","amount":"50.00","signer":"api-1","fx_rate":"0.92592593","converted":"46.30","to_currency":"EUR","from_currency":"USD"}
-    23:59:00.699  PREPARANDO
-    23:59:00.719  PREPARADO_EU   {"iban":"GS-EU-00000002","side":"CREDITO"}
-    23:59:00.740  PREPARADO_AM   {"iban":"GS-AM-00000001","side":"DEBITO"}
-    23:59:00.745  DECISAO_COMMIT
-    23:59:01.920  RECUPERACAO_COMMIT_EU
-    23:59:01.928  RECUPERACAO_COMMIT_AM
-    23:59:01.935  CONFIRMADA   {"recovered":true}
+    00:09:03.830  INICIADA   {"kind":"DISTRIBUIDA","amount":"50.00","signer":"api-1","fx_rate":"0.92592593","converted":"46.30","to_currency":"EUR","from_currency":"USD"}
+    00:09:03.834  PREPARANDO
+    00:09:03.852  PREPARADO_EU   {"iban":"GS-EU-00000002","side":"CREDITO"}
+    00:09:03.871  PREPARADO_AM   {"iban":"GS-AM-00000001","side":"DEBITO"}
+    00:09:03.878  DECISAO_COMMIT
+    00:09:04.812  RECUPERACAO_COMMIT_EU
+    00:09:04.817  RECUPERACAO_COMMIT_AM
+    00:09:04.822  CONFIRMADA   {"recovered":true}
   ✔ CONFIRMADA pela recuperação (RECUPERACAO_COMMIT_*)
 
 ▶ 5. O cliente repete o pedido com a mesma Idempotency-Key: não há segundo débito
   POST /transfers -> HTTP 200 (X-Served-By: api-1)
   HTTP 200  state=CONFIRMADA  idempotent_replay=true
-  GS-AM-00000001: 10619.54 → 10569.54 USD    GS-EU-00000002: 4659.60 → 4705.90 EUR
+  GS-AM-00000001: 10961.71 → 10911.71 USD    GS-EU-00000002: 4618.80 → 4665.10 EUR
   ✔ −50.00 USD / +46.30 EUR, uma única vez
   chaos depois do reinício (estado em memória, volta a off):
   GET /admin/consistency -> HTTP 200 (X-Served-By: api-1)
-    {"ok":true,"checked_transactions":159,"confirmed":147,"aborted":12,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[]},"problems":[]}
+    {"ok":true,"checked_transactions":239,"confirmed":222,"aborted":17,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[]},"problems":[]}
   ✔ /admin/consistency OK: sem dinheiro perdido nem duplicado
 
 ══════ Cenário 10 concluído ══════
-(2026-11-19T23:59:07Z)
+(2026-11-20T00:09:10Z)

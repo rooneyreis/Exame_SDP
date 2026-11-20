@@ -2,7 +2,7 @@
 
 Plataforma distribuída de transações financeiras internacionais (Exame Prático de Sistemas Distribuídos e Paralelos — ISUTC, LECC 31).
 
-> Em construção, por fases. Estado atual: **Fase 5 — Legado Java** concluída.
+> Em construção, por fases. Estado atual: **Fase 6 — Auditoria, relatórios e admin** concluída.
 
 ## Requisitos
 
@@ -130,6 +130,9 @@ Segurança aplicada:
 - **Movimentos** têm `origin` (`TRANSFERENCIA`/`DEPOSITO`/`LEVANTAMENTO`): depósitos e levantamentos são transações locais do shard, as transferências passam pelo coordenador (Fase 4).
 - **Nginx**: round-robin entre `172.28.0.11` e `172.28.0.12`. `proxy_next_upstream error timeout http_502 http_503`: se uma instância não responde, o pedido é repetido na outra e a falhada fica de fora durante `fail_timeout=10s`. POSTs só são repetidos se nunca chegaram ao backend, por isso um depósito nunca é executado duas vezes. O TLS até aos backends é verificado (`proxy_ssl_verify on`, nome `api.global.local` presente nos dois certificados).
 - Header `X-Served-By` mostra que instância respondeu.
+- **Leituras com o primário em baixo**: os endpoints só de leitura tentam o primário (2 s) e, se não responder, usam a réplica (`target_session_attrs=any`). Saldos e extratos continuam disponíveis durante a falha (cenário 08); as escritas esperam pelo failover.
+- Uma BD indisponível dá `503` (nunca `500`).
+- Ligações aos shards com keepalives TCP e `tcp_user_timeout=8s`: um nó isolado pela rede é detetado em segundos, não em minutos (cenário 13).
 
 ## Transferências e Two-Phase Commit (serviço `coordinator`)
 
@@ -219,9 +222,21 @@ dca0276b-d89b-5c3d-ac71-3171e6284dc0GS-EU-00000001GS-AM-00000001000000000010000E
 - **Liquidação assíncrona**: quando uma transferência `DISTRIBUIDA` fica `CONFIRMADA`, `settlement_status = PENDENTE` e o coordenador envia a ordem numa tarefa em segundo plano (o cliente não espera). Resposta → `ACEITE` ou `REJEITADA`. Se o legado estiver em baixo, fica `PENDENTE` e o recovery loop volta a tentar. O legado é idempotente por `TxId`.
 - A rejeição da liquidação não desfaz a transferência (que já está confirmada nos shards): fica registada para tratamento posterior (em produção: estorno/compensação).
 
-## Auditoria (NFS)
+## Auditoria, relatórios e administração (NFS)
 
-Cada nó escreve em `/audit/<AAAA-MM-DD>/<nó>.log` (JSON Lines). Cada linha tem `prev_hash` e `hash = SHA-256(prev_hash + JSON canónico da linha)`: alterar, apagar ou reordenar uma linha parte a cadeia a partir daí (`common/audit.py`, validação na Fase 6).
+| Método | Endpoint | Quem | Descrição |
+|---|---|---|---|
+| GET | `/admin/audit?date=AAAA-MM-DD` | auditor, admin | lê os logs de todos os nós no NFS e valida cada cadeia de hashes; aponta a primeira linha adulterada |
+| GET | `/admin/reports?date=` | auditor, admin | relatório diário partilhado (transações por estado/tipo, volume por região, depósitos/levantamentos) |
+| GET | `/admin/status` | admin, auditor | estado de todos os nós: serviços (HTTPS `/health`), BDs (primário/réplica, réplicas em streaming, preparadas pendentes, TLS), NFS |
+| GET | `/admin/consistency` | auditor, admin | invariantes do 2PC em todos os shards |
+
+- **Auditoria à prova de adulteração**: cada nó escreve só no seu ficheiro `/audit/<AAAA-MM-DD>/<nó>.log` (sem conflitos de escrita). Cada linha JSON tem `prev_hash` e `hash = SHA-256(prev_hash + JSON canónico da linha)`. Alterar, apagar ou reordenar uma linha parte a cadeia a partir daí (cenário 05).
+- **Relatório diário partilhado** `/audit/reports/<AAAA-MM-DD>.json`: um único ficheiro atualizado pelo coordinator **e** pelas duas api. Cada atualização é ler-modificar-escrever dentro de:
+  1. `threading.Lock`, entre threads do mesmo processo, porque os locks POSIX pertencem ao processo e duas threads do mesmo processo não se bloqueariam com `fcntl`;
+  2. `fcntl.lockf(LOCK_EX)`, entre processos e entre nós. No NFSv4 o lock é gerido pelo servidor.
+
+  Os logs mostram `lock NFS adquirido … (esperou X ms)` / `lock NFS libertado`. Teste: 20 depósitos simultâneos repartidos pelas duas api dão exatamente +20 no relatório.
 
 ## Cenários de demonstração
 
@@ -235,6 +250,11 @@ Cada nó escreve em `/audit/<AAAA-MM-DD>/<nó>.log` (JSON Lines). Cada linha tem
 ./scripts/demo/09-queda-durante-2pc.sh     # docker stop pg-america entre o PREPARE e o COMMIT
 ./scripts/demo/10-crash-coordenador.sh     # coordenador morre depois da decisão
 ./scripts/demo/11-concorrencia.sh          # 50 transferências em paralelo
+./scripts/demo/05-adulteracao.sh           # pedidos adulterados rejeitados; log alterado no NFS detetado
+./scripts/demo/08-queda-shard-failover.sh  # docker stop pg-europa → failover → volta como réplica
+./scripts/demo/12-tls.sh                   # tudo sem TLS é recusado
+./scripts/demo/13-particao-rede.sh         # docker network disconnect durante o 2PC (2 variantes)
+./scripts/demo/run-all.sh                  # todos, por ordem (PAUSE=1 para a apresentação)
 PAUSE=1 ./scripts/demo/06-queda-api.sh   # pausa entre passos (apresentação ao docente)
 ```
 
@@ -255,4 +275,5 @@ A saída de cada cenário fica em `docs/evidencias/<cenário>.log`.
 - Servidor NFS único (ponto único de falha); em produção, GlusterFS/CephFS replicado.
 - Em Docker Desktop todos os mounts NFS são feitos pelo mesmo kernel (a VM do Docker, `clientaddr=172.28.0.1`). Os locks são arbitrados pelo servidor (`local_lock=none`), mas num cenário real cada nó seria uma máquina diferente com o seu próprio cliente NFS.
 - `Graceless = true` (ver acima).
+- Auditoria: a cadeia de hashes deteta alterações, mas quem tiver acesso de escrita ao NFS pode **reescrever o ficheiro inteiro** com hashes novos. Em produção: ancorar periodicamente o último hash num sistema externo (outro nó, WORM, assinatura com chave do auditor).
 - Nunca alterar o diretório exportado diretamente no servidor NFS: os clientes têm cache de entradas e ficam com referências obsoletas. Todas as escritas passam pelo protocolo NFS.

@@ -29,6 +29,7 @@ from common.audit import AuditLog
 from common.crypto import check_signed_request, load_ed25519_private, load_ed25519_public, load_trusted_signers
 from common.db import REGIONS, make_pool, region_of_iban, shard_conninfo
 from common.logging import add_request_logging, log_extra, setup_logging, tx_id_var
+from common.reports import record as record_report
 
 from . import logic, settlement
 from .config import settings
@@ -61,6 +62,7 @@ tx_slots = asyncio.Semaphore(settings.max_concurrent_tx)
 class Chaos:
     """Fault injection for the demo. Kept in memory: after a crash the coordinator restarts
     with chaos off (otherwise crash_after_* would crash it again on every transfer)."""
+    pause_before_prepare: int = 0          # pause before phase 1 (time to cut the network, scenario 13)
     pause_after_prepare: int = settings.chaos_pause_after_prepare
     crash_after_prepare: bool = settings.chaos_crash_after_prepare
     crash_after_decision: bool = settings.chaos_crash_after_decision
@@ -106,6 +108,11 @@ async def set_state(tx_id, state: str, reason: str | None = None, **detail) -> N
             "settlement_status = CASE WHEN %s = 'CONFIRMADA' AND kind = 'DISTRIBUIDA' AND settlement_status = 'N/A' "
             "THEN 'PENDENTE' ELSE settlement_status END WHERE tx_id = %s", (state, reason, state, tx_id))
     await event(tx_id, state, **({"reason": reason} if reason else {}), **detail)
+    if state in ("CONFIRMADA", "ABORTADA"):
+        tx = await load_tx(tx_id)
+        await record_report("coordinator", {"type": "transfer", "state": state, "kind": tx["kind"],
+                                            "region": tx["from_region"], "currency": tx["from_currency"],
+                                            "amount": str(tx["amount"])})
 
 
 async def load_tx(tx_id) -> dict | None:
@@ -217,6 +224,9 @@ async def run_2pc(tx: dict) -> None:
     tx_id = tx["tx_id"]
     await set_state(tx_id, "PREPARANDO")
     prepared: dict[str, psycopg.AsyncConnection] = {}
+    if chaos.pause_before_prepare:
+        await event(tx_id, "PAUSA_CHAOS_ANTES_PREPARE", seconds=chaos.pause_before_prepare)
+        await asyncio.sleep(chaos.pause_before_prepare)
 
     # ---- Phase 1: PREPARE, one shard after the other in the global order (EU, AM) ----
     failure = None
@@ -574,8 +584,9 @@ async def set_chaos(request: Request):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, reason)
     mode = json.loads(body).get("mode", {})
     if mode.get("off"):
-        chaos.__init__(0, False, False, None)
+        chaos.__init__(0, 0, False, False, None)
     else:
+        chaos.pause_before_prepare = int(mode.get("pause_before_prepare", chaos.pause_before_prepare))
         chaos.pause_after_prepare = int(mode.get("pause_after_prepare", chaos.pause_after_prepare))
         chaos.crash_after_prepare = bool(mode.get("crash_after_prepare", chaos.crash_after_prepare))
         chaos.crash_after_decision = bool(mode.get("crash_after_decision", chaos.crash_after_decision))

@@ -1,13 +1,13 @@
 
 ══════ Cenário 06 — Queda de uma instância da API ══════
-(2026-11-19T23:56:48Z)
+(2026-11-20T00:06:58Z)
   POST /auth/login -> HTTP 200
 
 ▶ 1. Situação normal: o nginx distribui os pedidos (round-robin)
-  GET /accounts -> HTTP 200 (X-Served-By: api-1)
   GET /accounts -> HTTP 200 (X-Served-By: api-2)
   GET /accounts -> HTTP 200 (X-Served-By: api-1)
   GET /accounts -> HTTP 200 (X-Served-By: api-2)
+  GET /accounts -> HTTP 200 (X-Served-By: api-1)
   ✔ respostas: 2×api-1 2×api-2 
 
 ▶ 2. Derrubar a api-1
@@ -22,8 +22,8 @@
   ✔ todos os pedidos responderam 200: 6×api-2 
   logs do nginx: o 1.º pedido tentou a api-1 (172.28.0.11), falhou e foi repetido na api-2 (172.28.0.12);
   depois disso a api-1 fica marcada em baixo durante fail_timeout=10s e nem é tentada:
-    2026/11/19 23:56:51 [error] 30#30: *490 upstream timed out (110: Operation timed out) while connecting to upstream, client: 172.28.0.192, server: nginx.global.local, request: "GET /accounts HTTP/1.1", upstream: "https://172.28.0.11:8000/accounts", host: "localhost"
-    {"ts":"2026-11-19T23:56:51+00:00","service":"nginx","request_id":"88f3f6cf928f62537713a9781ed818d2","method":"GET","uri":"/accounts","status":200,"upstream":"172.28.0.11:8000, 172.28.0.12:8000","upstream_status":"504, 200","ms":2.006}
+    2026/11/20 00:07:01 [error] 22#22: *232 upstream timed out (110: Operation timed out) while connecting to upstream, client: 172.28.0.192, server: nginx.global.local, request: "GET /accounts HTTP/1.1", upstream: "https://172.28.0.11:8000/accounts", host: "localhost"
+    {"ts":"2026-11-20T00:07:01+00:00","service":"nginx","request_id":"d3dc9de8e75d832a0fd31d569b762787","method":"GET","uri":"/accounts","status":200,"upstream":"172.28.0.11:8000, 172.28.0.12:8000","upstream_status":"504, 200","ms":2.006}
 
 ▶ 3. Voltar a ligar a api-1
   $ docker start api-1
@@ -37,4 +37,4 @@
   ✔ respostas: 2×api-1 4×api-2 
 
 ══════ Cenário 06 concluído: nenhum pedido falhou ══════
-(2026-11-19T23:57:07Z)
+(2026-11-20T00:07:16Z)

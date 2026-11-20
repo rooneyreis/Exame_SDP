@@ -1,0 +1,56 @@
+
+══════ Cenário 12 — TLS obrigatório em todos os canais ══════
+(2026-11-20T00:09:54Z)
+
+▶ 1. PostgreSQL sem TLS (sslmode=disable) → recusado pelo pg_hba.conf
+  ✔ pg-core: ligação sem TLS rejeitada ("no encryption")
+  ✔ pg-europa: ligação sem TLS rejeitada ("no encryption")
+  ✔ pg-america: ligação sem TLS rejeitada ("no encryption")
+
+▶ 2. PostgreSQL com TLS mas a apontar para o servidor errado → certificado não corresponde ao nome
+  ✔ verify-full detetou o servidor falso
+
+▶ 3. Todas as ligações ativas aos Postgres estão cifradas
+      usename   | application_name  | ssl | version |         cipher         
+    ------------+-------------------+-----+---------+------------------------
+     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     replicator | pg-europa-replica | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+    (15 rows)
+    
+  ✔ 0 ligações de rede sem TLS
+
+▶ 4. HTTP simples à porta 80 do host → nada a ouvir
+  $ curl http://localhost/health
+  ✔ ligação recusada (só existe HTTPS 443)
+
+▶ 5. HTTP simples na porta HTTPS → o nginx recusa
+  $ curl http://localhost:443/health
+  ✔ HTTP 400: "The plain HTTP request was sent to HTTPS port"
+
+▶ 6. Dentro da rede: HTTP simples diretamente a uma api → recusado (Uvicorn só fala TLS)
+    recusado: RemoteDisconnected
+  ✔ api-2 recusou HTTP sem TLS
+
+▶ 7. Protocolos e cadeia de certificados no nginx
+  $ openssl s_client -connect localhost:443 -CAfile infra/certs/ca.crt
+    subject=C=MZ, O=Global Scale Corporation, CN=nginx.global.local
+    issuer=C=MZ, O=Global Scale Corporation, CN=Global Scale Local CA
+    Protocol: TLSv1.3
+    Verify return code: 0 (ok)
+  ✔ TLS 1.1 recusado (mínimo TLS 1.2)
+
+══════ Cenário 12 concluído ══════
+(2026-11-20T00:09:59Z)

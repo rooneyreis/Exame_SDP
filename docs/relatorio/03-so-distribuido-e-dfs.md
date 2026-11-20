@@ -1,6 +1,4 @@
-# Sistema Operativo Distribuído e DFS (rascunho — notas recolhidas na Fase 0)
-
-> Notas para desenvolver no relatório. Completar na Fase 6 (relatórios diários com lock).
+# Sistema Operativo Distribuído e DFS (rascunho)
 
 ## Implementação
 
@@ -35,3 +33,16 @@
 - Um teste apagava `/audit/phase0` **diretamente no servidor**, por fora do NFS. Com outro contentor (`auth`) a manter o volume montado, o cliente NFS (partilhado na VM do Docker) manteve a entrada do diretório em cache. A execução seguinte recebia `ENOENT` ao criar ficheiros lá dentro.
 - Explicação: o cliente NFS guarda atributos e entradas de diretório em cache durante alguns segundos (`acdirmin`/`acdirmax`). A coerência só é garantida para operações que passam pelo protocolo (close-to-open).
 - Correção: a limpeza passa a ser feita por um cliente NFS. Mostra porque é que, num DFS, toda a escrita tem de passar pela camada distribuída.
+
+## Acesso concorrente real: o relatório diário (Fase 6)
+
+- `/audit/reports/<dia>.json` é **um único ficheiro** escrito por três nós (coordinator, api-1, api-2).
+- `common/reports.py`: ler-modificar-escrever dentro de `fcntl.lockf(LOCK_EX)`, com `fsync` antes do unlock; a leitura usa `LOCK_SH` (lock partilhado: vários leitores ao mesmo tempo, nenhum escritor).
+- Detalhe importante de SO: os *record locks* POSIX (`fcntl`) são **por processo**. Duas threads do mesmo processo obtêm ambas o lock "exclusivo". Como as escritas correm em `asyncio.to_thread` (várias threads), juntou-se um `threading.Lock`. Teste unitário `test_concurrent_threads_lose_no_update`: 8 threads × 10 atualizações = 80 exatas.
+- Teste de integração: 20 depósitos simultâneos repartidos pelo nginx entre api-1 e api-2 dão exatamente +20 no relatório (`test_concurrent_deposits_from_both_apis_lose_no_report_update`).
+- Nos logs: `lock NFS adquirido em 2026-11-20.json (esperou 0.9 ms)` / `lock NFS libertado`.
+
+## Integridade dos ficheiros no DFS
+
+- Auditoria encadeada por hash (`common/audit.py`). No cenário 05 um intruso altera 1 byte de uma linha **através de um cliente NFS**; `/admin/audit` aponta exatamente essa linha.
+- Limitação: com acesso de escrita, alguém poderia reescrever o ficheiro inteiro recalculando todos os hashes. Mitigação em produção: publicar o último hash noutro sistema (ancoragem) ou assinar periodicamente com uma chave que só o auditor tem.

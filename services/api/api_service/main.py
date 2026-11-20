@@ -7,21 +7,28 @@
 (Transfers and admin endpoints are added in Phases 4 and 6.)
 """
 import asyncio
+import os
+from contextlib import asynccontextmanager as _acm
 import ssl
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+import psycopg
+import psycopg_pool
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 
-from common.audit import AuditLog
+from common.audit import AuditLog, verify_chain
 from common.crypto import canonical_json, load_ed25519_private, signed_headers
 from common.db import REGIONS, ShardRouter, is_valid_iban, make_pool, region_of_iban, shard_conninfo
 from common.jwt_auth import TokenValidator, auth_dependencies
 from common.logging import add_request_logging, log_extra, setup_logging, tx_id_var
+from common.reports import read_report
+from common.reports import record as record_report
 from common.transfers import transfer_tx_id
 
 from .config import settings
@@ -34,8 +41,10 @@ validator = TokenValidator(jwks_url=settings.jwks_url, ca_file=settings.ca_file,
                            refresh_seconds=settings.jwks_refresh_seconds)
 current_claims, require_role = auth_dependencies(validator)
 
-shards = ShardRouter({r: shard_conninfo(r, settings.db_user, settings.db_password, settings.ca_file)
-                      for r in REGIONS})
+shards = ShardRouter(
+    {r: shard_conninfo(r, settings.db_user, settings.db_password, settings.ca_file) for r in REGIONS},
+    # read-only endpoints may be served by the replica while the primary is down
+    {r: shard_conninfo(r, settings.db_user, settings.db_password, settings.ca_file, read_only=True) for r in REGIONS})
 core = make_pool(
     f"host=pg-core.global.local dbname=coordinator user={settings.db_user} password={settings.db_password} "
     f"sslmode=verify-full sslrootcert={settings.ca_file} connect_timeout=3", max_size=5)
@@ -64,6 +73,14 @@ app = FastAPI(title=f"Global-Scale API ({settings.instance_id})", lifespan=lifes
 add_request_logging(app, log)
 
 
+@app.exception_handler(psycopg_pool.PoolTimeout)
+@app.exception_handler(psycopg.OperationalError)
+async def database_unavailable(request, exc):
+    """A shard/pg-core that is down (or in the middle of a failover) gives 503, not 500."""
+    log.warning(f"base de dados indisponível: {exc!r}")
+    return JSONResponse(status_code=503, content={"detail": "base de dados indisponível, tente novamente"})
+
+
 @app.middleware("http")
 async def served_by(request, call_next):
     response = await call_next(request)
@@ -72,6 +89,23 @@ async def served_by(request, call_next):
 
 
 # --- helpers -------------------------------------------------------------------
+
+@_acm
+async def read_connection(region: str):
+    """Connection for READ-ONLY queries: the primary (fresh data) if it answers within 2 s,
+    otherwise the replica (target_session_attrs=any). So balances and statements stay
+    available while a shard primary is down, and are never stale while it is up."""
+    pool = shards.for_region(region)
+    try:
+        conn = await pool.getconn(timeout=2)
+    except psycopg_pool.PoolTimeout:
+        log.warning(f"primário do shard {region} indisponível: leitura servida pela réplica")
+        pool = shards.for_region(region, read=True)
+        conn = await pool.getconn()
+    try:
+        yield conn
+    finally:
+        await pool.putconn(conn)
 
 def account_out(row: dict) -> dict:
     return {
@@ -88,7 +122,7 @@ def check_iban(iban: str) -> None:
 
 async def load_account(iban: str) -> dict:
     check_iban(iban)
-    async with shards.for_iban(iban).connection() as conn:
+    async with read_connection(region_of_iban(iban)) as conn:
         row = await (await conn.execute("SELECT * FROM accounts WHERE iban = %s", (iban,))).fetchone()
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conta não encontrada")
@@ -131,7 +165,7 @@ async def health():
 async def me(claims: dict = Depends(current_claims)):
     accounts = []
     if claims["role"] == "cliente":
-        async with shards.for_region(claims["region"]).connection() as conn:
+        async with read_connection(claims["region"]) as conn:
             rows = await (await conn.execute(
                 "SELECT * FROM accounts WHERE user_id = %s ORDER BY iban", (claims["sub"],))).fetchall()
         accounts = [account_out(r) for r in rows]
@@ -142,7 +176,7 @@ async def me(claims: dict = Depends(current_claims)):
 @app.get("/accounts")
 async def my_accounts(claims: dict = Depends(require_role("cliente"))):
     # The user's region (JWT claim) says which shard holds their accounts.
-    async with shards.for_region(claims["region"]).connection() as conn:
+    async with read_connection(claims["region"]) as conn:
         rows = await (await conn.execute(
             "SELECT * FROM accounts WHERE user_id = %s ORDER BY iban", (claims["sub"],))).fetchall()
     return [account_out(r) for r in rows]
@@ -159,7 +193,7 @@ async def get_account(iban: str, claims: dict = Depends(current_claims)):
 async def movements(iban: str, limit: int = 100, claims: dict = Depends(current_claims)):
     account = await load_account(iban)
     ensure_owner_or_role(account, claims, "operador", "auditor")
-    async with shards.for_iban(iban).connection() as conn:
+    async with read_connection(region_of_iban(iban)) as conn:
         rows = await (await conn.execute(
             """SELECT id, tx_id, type, amount, currency, balance_after, origin, created_at
                FROM movements WHERE iban = %s ORDER BY id DESC LIMIT %s""",
@@ -209,6 +243,9 @@ async def cash_operation(iban: str, body: CashOperation, claims: dict, kind: str
              extra=log_extra(tx_id=str(tx_id), operador=claims["sub"]))
     await audit.write(kind, tx_id=str(tx_id), iban=iban, amount=f"{body.amount:.2f}",
                       currency=account["currency"], balance_after=f"{new_balance:.2f}", operador=claims["sub"])
+    await record_report(settings.instance_id, {"type": "cash", "operation": kind, "region": region_of_iban(iban),
+                                               "currency": account["currency"], "amount": f"{body.amount:.2f}"},
+                        settings.audit_dir)
     return {"tx_id": str(tx_id), "iban": iban, "type": kind, "amount": f"{body.amount:.2f}",
             "currency": account["currency"], "balance": f"{new_balance:.2f}"}
 
@@ -371,3 +408,94 @@ async def consistency(claims: dict = Depends(require_role("auditor", "admin"))):
     }
     await audit.write("VERIFICACAO_CONSISTENCIA", ok=result["ok"], problems=len(problems), by=claims["sub"])
     return result
+
+
+def today() -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime())
+
+
+@app.get("/admin/audit")
+async def audit_check(date: str = Query(default_factory=today, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+                      claims: dict = Depends(require_role("auditor", "admin"))):
+    """Reads the audit logs of every node from the NFS and validates each hash chain."""
+    def check() -> dict:
+        folder = os.path.join(settings.audit_dir, date)
+        if not os.path.isdir(folder):
+            return {}
+        out = {}
+        for name in sorted(os.listdir(folder)):
+            with open(os.path.join(folder, name), encoding="utf-8") as f:
+                lines = [l for l in f.read().splitlines() if l.strip()]
+            ok, bad_line, reason = verify_chain(lines)
+            out[name] = {"lines": len(lines), "ok": ok, "first_bad_line": bad_line, "reason": reason}
+            if bad_line:
+                out[name]["bad_content"] = lines[bad_line - 1][:300]
+        return out
+
+    files = await asyncio.to_thread(check)
+    if not files:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"sem auditoria para {date}")
+    return {"date": date, "ok": all(f["ok"] for f in files.values()), "files": files,
+            "checked_by": settings.instance_id}
+
+
+@app.get("/admin/reports")
+async def daily_report(date: str = Query(default_factory=today, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+                       claims: dict = Depends(require_role("auditor", "admin"))):
+    report = await asyncio.to_thread(read_report, settings.audit_dir, date)
+    if report is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"sem relatório para {date}")
+    return report
+
+
+SERVICES_HEALTH = {
+    "auth": "https://auth.global.local:8010/health",
+    "coordinator": "https://coordinator.global.local:8020/health",
+    "legacy-bank": "https://legacy-bank.global.local:9443/health",
+    "api-1": "https://api-1.global.local:8000/health",
+    "api-2": "https://api-2.global.local:8000/health",
+}
+DB_NODES = {
+    "pg-core": "coordinator", "pg-europa": "bank", "pg-europa-replica": "bank",
+    "pg-america": "bank", "pg-america-replica": "bank",
+}
+
+
+@app.get("/admin/status")
+async def cluster_status(claims: dict = Depends(require_role("admin", "auditor"))):
+    """State of every node: services (HTTPS /health), databases (primary/replica,
+    pending prepared transactions) and the NFS."""
+    async def service(name: str, url: str):
+        start = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(verify=ssl.create_default_context(cafile=settings.ca_file), timeout=3) as c:
+                r = await c.get(url)
+            return name, {"up": r.status_code < 500, "http": r.status_code, "ms": round((time.perf_counter() - start) * 1000)}
+        except Exception as exc:
+            return name, {"up": False, "error": type(exc).__name__}
+
+    async def database(node: str, dbname: str):
+        conninfo = (f"host={node}.global.local dbname={dbname} user={settings.db_user} password={settings.db_password} "
+                    f"sslmode=verify-full sslrootcert={settings.ca_file} connect_timeout=2")
+        try:
+            async with await psycopg.AsyncConnection.connect(conninfo) as conn:
+                row = await (await conn.execute(
+                    "SELECT pg_is_in_recovery(), (SELECT count(*) FROM pg_prepared_xacts), "
+                    "(SELECT count(*) FROM pg_stat_replication), current_setting('ssl')")).fetchone()
+            return node, {"up": True, "role": "réplica" if row[0] else "primário", "prepared_xacts": row[1],
+                          "replicas_streaming": row[2], "ssl": row[3]}
+        except Exception as exc:
+            return node, {"up": False, "error": type(exc).__name__}
+
+    results = await asyncio.gather(*(service(n, u) for n, u in SERVICES_HEALTH.items()),
+                                   *(database(n, d) for n, d in DB_NODES.items()))
+    services = dict(results[:len(SERVICES_HEALTH)])
+    databases = dict(results[len(SERVICES_HEALTH):])
+    services[settings.instance_id] = {"up": True, "self": True}
+    try:
+        days = sorted(d for d in os.listdir(settings.audit_dir) if d[:2] == "20")
+        nfs = {"up": True, "mount": settings.audit_dir, "days": days[-5:]}
+    except OSError as exc:
+        nfs = {"up": False, "error": repr(exc)}
+    return {"served_by": settings.instance_id, "services": services, "databases": databases, "nfs": nfs,
+            "all_up": all(v["up"] for v in [*services.values(), *databases.values(), nfs])}
