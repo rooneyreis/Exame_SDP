@@ -831,3 +831,4 @@ a.account-card:active { transform: scale(0.99); }
 .node-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
 .qa .tx-icon { background: var(--accent-soft); color: var(--accent); flex: none; display: grid; place-items: center; }
 .qa .tx-icon svg.i { width: 18px; height: 18px; }
+table.sr-only, .sr-only { display: block; margin: -1px; padding: 0; border: 0; clip-path: inset(50%); }

@@ -3,7 +3,7 @@
 import { api } from "../api.js";
 import { dateTime, initials } from "../format.js";
 import { icon } from "../icons.js";
-import { $, $$, busy, confirmSheet, esc, fieldError, sheet, toast } from "../ui.js";
+import { $, $$, busy, confirmSheet, drawer, esc, fieldError, sheet, toast } from "../ui.js";
 import { roleBadge, ROLE_LABEL, userStatusChip, users } from "../staff.js";
 import { pageHead } from "./common.js";
 
@@ -18,14 +18,20 @@ export async function render({ root, claims }) {
     root.innerHTML = `
       ${pageHead("Utilizadores e perfis", "Gestão de acessos. As permissões de cada perfil são aplicadas no servidor em cada pedido.",
         `<button class="btn btn-secondary" id="matrix">${icon("shield")} Perfis e permissões</button><button class="btn btn-primary" id="new">${icon("plus")} Novo utilizador</button>`)}
-      <div class="card">
-        <div class="toolbar">
+      <section class="panel"><div class="metric-strip" style="--n:4">
+        <div class="metric"><span class="m-label">${icon("users")} Equipa</span><span class="m-value">${list.filter((u) => u.role !== "cliente").length}</span><span class="m-sub">${["admin", "operador", "auditor"].map((r) => `${list.filter((u) => u.role === r).length} ${ROLE_LABEL[r].toLowerCase()}`).join(" · ")}</span></div>
+        <div class="metric"><span class="m-label">${icon("user")} Clientes</span><span class="m-value">${list.filter((u) => u.role === "cliente").length}</span><span class="m-sub">${list.filter((u) => u.role === "cliente" && u.status === "ATIVA").length} ativos</span></div>
+        <div class="metric"><span class="m-label">${icon("clock")} A aguardar KYC</span><span class="m-value">${list.filter((u) => u.status === "PENDENTE_VERIFICACAO").length}</span><span class="m-sub"><a href="#/ops/kyc">abrir verificação</a></span></div>
+        <div class="metric"><span class="m-label">${icon("lock")} Bloqueados / desativados</span><span class="m-value">${list.filter((u) => u.status === "BLOQUEADA" || u.status === "DESATIVADA").length}</span><span class="m-sub">${list.filter((u) => u.locked_until && new Date(u.locked_until) > new Date()).length} com bloqueio temporário</span></div>
+      </div></section>
+      <section class="panel mt">
+        <div class="filters">
           <div class="segmented" role="group"><button data-tab="staff" aria-pressed="${tab === "staff"}">Equipa</button><button data-tab="clients" aria-pressed="${tab === "clients"}">Clientes</button></div>
           <div class="search">${icon("search")}<input class="input" id="q" type="search" value="${esc(q)}" placeholder="Nome, email ou telefone"></div>
-          ${tab === "staff" ? `<select class="select" id="role" style="width:auto"><option value="">Todos os perfis</option>${["admin", "operador", "auditor"].map((r) => `<option value="${r}" ${r === role ? "selected" : ""}>${ROLE_LABEL[r]}</option>`).join("")}</select>` : ""}
-          <select class="select" id="st" style="width:auto"><option value="">Todos os estados</option>${["ATIVA", "BLOQUEADA", "DESATIVADA", "PENDENTE_VERIFICACAO"].map((s) => `<option value="${s}" ${s === statusF ? "selected" : ""}>${s === "PENDENTE_VERIFICACAO" ? "Pendente" : s.charAt(0) + s.slice(1).toLowerCase()}</option>`).join("")}</select>
+          ${tab === "staff" ? `<select class="select" id="role"><option value="">Todos os perfis</option>${["admin", "operador", "auditor"].map((r) => `<option value="${r}" ${r === role ? "selected" : ""}>${ROLE_LABEL[r]}</option>`).join("")}</select>` : ""}
+          <select class="select" id="st"><option value="">Todos os estados</option>${["ATIVA", "BLOQUEADA", "DESATIVADA", "PENDENTE_VERIFICACAO"].map((s) => `<option value="${s}" ${s === statusF ? "selected" : ""}>${s === "PENDENTE_VERIFICACAO" ? "Pendente" : s.charAt(0) + s.slice(1).toLowerCase()}</option>`).join("")}</select>
         </div>
-        <div class="table-wrap"><table class="table"><thead><tr><th>Utilizador</th><th class="hide-sm">Contacto</th><th>Perfil</th><th>Estado</th><th class="hide-sm">Criado</th><th></th></tr></thead><tbody>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Utilizador</th><th class="hide-sm">Contacto</th><th class="w-status">Perfil</th><th class="w-status">Estado</th><th class="hide-sm w-date">Criado</th><th class="w-actions"></th></tr></thead><tbody>
           ${rows.map((u) => `<tr>
             <td><div class="row"><span class="avatar">${esc(initials(u.full_name))}</span><div><b style="font-weight:560">${esc(u.full_name)}</b>${u.id === claims.sub ? ` <span class="hint">(você)</span>` : ""}
               ${u.locked_until && new Date(u.locked_until) > new Date() ? `<div class="hint" style="color:var(--warn-ink)">bloqueio temporário por tentativas falhadas</div>` : ""}</div></div></td>
@@ -34,7 +40,7 @@ export async function render({ root, claims }) {
             <td class="hide-sm">${esc(dateTime(u.created_at))}</td>
             <td class="r"><button class="btn btn-secondary btn-sm" data-user="${esc(u.id)}">${icon("settings")} Gerir</button></td></tr>`).join("") || `<tr><td colspan="6"><div class="empty">Sem resultados.</div></td></tr>`}
         </tbody></table></div>
-      </div>`;
+      </section>`;
     $$("[data-tab]", root).forEach((b) => b.addEventListener("click", () => { tab = b.dataset.tab; role = ""; draw(); }));
     let t; $("#q", root).addEventListener("input", (e) => { clearTimeout(t); t = setTimeout(() => { q = e.target.value; draw(); }, 250); });
     $("#role", root)?.addEventListener("change", (e) => { role = e.target.value; draw(); });
@@ -52,8 +58,8 @@ export async function render({ root, claims }) {
     if (u.status === "BLOQUEADA" || (u.status === "ATIVA" && u.locked_until)) actions.push(["unblock", "Desbloquear", "key"]);
     if (u.status !== "DESATIVADA") actions.push(["deactivate", "Desativar", "x"]);
     if (u.status === "DESATIVADA") actions.push(["reactivate", "Reativar", "refresh"]);
-    const s = sheet({
-      title: "Gerir utilizador",
+    const s = drawer({
+      title: "Gerir utilizador", subtitle: esc(u.email),
       body: `
         <div class="row" style="gap:14px;margin-bottom:16px"><span class="avatar" style="width:48px;height:48px">${esc(initials(u.full_name))}</span>
           <div><h3>${esc(u.full_name)}</h3><div class="row" style="gap:8px;margin-top:4px">${roleBadge(u.role)}${userStatusChip(u.status)}</div></div></div>
@@ -104,8 +110,8 @@ export async function render({ root, claims }) {
   }
 
   function create() {
-    const s = sheet({
-      title: "Novo utilizador da equipa",
+    const s = drawer({
+      title: "Novo utilizador da equipa", subtitle: "O acesso fica ativo de imediato e é registado na auditoria.",
       body: `<div class="stack" style="gap:12px">
         <div class="field"><label for="n-name">Nome completo</label><input class="input" id="n-name"></div>
         <div class="grid g-2" style="gap:12px"><div class="field"><label for="n-email">Email</label><input class="input" id="n-email" type="email"></div>

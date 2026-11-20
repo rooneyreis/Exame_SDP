@@ -5,7 +5,7 @@
 import { api } from "../api.js";
 import { dateTime, iban, money } from "../format.js";
 import { icon } from "../icons.js";
-import { $, $$, busy, esc, fieldError, sheet, toast } from "../ui.js";
+import { $, $$, busy, drawer, esc, fieldError, toast } from "../ui.js";
 import { downloadCsv, exportButtons, REQUEST_STATUS, requestChip, users, who } from "../staff.js";
 import { pageHead } from "./common.js";
 
@@ -29,25 +29,25 @@ export async function render({ root, claims, navigate }) {
       : isOperator ? "Transferências que registou: pendentes de aprovação, concluídas, rejeitadas e falhadas." : "Registo completo de pedidos, decisões e responsáveis (só leitura).";
     root.innerHTML = `
       ${pageHead(title, sub, `${isOperator ? `<a class="btn btn-primary" href="#/ops/transfer">${icon("plus")} Nova transferência</a>` : ""}${exportButtons()}`)}
-      <div class="card">
-        <div class="toolbar">
+      <section class="panel">
+        <div class="filters">
           <div class="segmented" role="group" aria-label="Estado">${TABS.map(([k, l]) => `<button data-tab="${k}" aria-pressed="${k === tab}">${l}</button>`).join("")}</div>
           ${isOperator ? `<label class="row" style="gap:8px;font-size:.86rem"><input type="checkbox" id="mine" ${mine ? "checked" : ""} style="width:17px;height:17px;accent-color:var(--accent)"> Só os meus</label>` : ""}
           <span class="hint" style="margin-left:auto">${rows.length} pedido(s)</span>
         </div>
         ${rows.length ? `<div class="table-wrap"><table class="table"><thead><tr>
-            <th>Registado</th><th>Origem → Destino</th><th class="r">Montante</th><th class="hide-sm">Registado por</th><th class="hide-sm">Decisão</th><th>Estado</th>${canDecide ? "<th></th>" : ""}</tr></thead><tbody>
+            <th class="w-date">Registado</th><th>Origem → Destino</th><th class="w-money">Montante</th><th class="hide-sm">Registado por</th><th class="hide-sm">Decisão</th><th>Estado</th>${canDecide ? "<th></th>" : ""}</tr></thead><tbody>
           ${rows.map((r) => `<tr class="clickable" data-req="${esc(r.id)}">
             <td class="num" style="white-space:nowrap">${esc(dateTime(r.created_at))}</td>
             <td><span class="mono">${esc(iban(r.from_iban))}</span><br><span class="mono muted">→ ${esc(iban(r.to_iban))}</span>${r.beneficiary_name ? `<div class="hint">${esc(r.beneficiary_name)}</div>` : ""}</td>
-            <td class="r"><span class="amount num">${esc(money(r.amount, r.currency))}</span>${r.requires_approval ? `<div class="hint">exige aprovação</div>` : ""}</td>
+            <td class="w-money"><span class="amount num">${esc(money(r.amount, r.currency))}</span>${r.requires_approval ? `<div class="hint">exige aprovação</div>` : ""}</td>
             <td class="hide-sm">${esc(who(dir, r.created_by))}</td>
             <td class="hide-sm">${r.decided_by ? `${esc(who(dir, r.decided_by))}<div class="hint">${esc(dateTime(r.decided_at))}</div>` : `<span class="muted">—</span>`}</td>
             <td>${requestChip(r.effective_status)}</td>
             ${canDecide ? `<td class="r">${r.effective_status === "PENDENTE_APROVACAO" ? `<button class="btn btn-primary btn-sm" data-open="${esc(r.id)}">Rever</button>` : ""}</td>` : ""}
           </tr>`).join("")}</tbody></table></div>`
         : `<div class="empty"><div class="tx-icon in">${icon("check")}</div><h3>Sem pedidos neste estado</h3></div>`}
-      </div>`;
+      </section>`;
     $$("[data-tab]", root).forEach((b) => b.addEventListener("click", () => { tab = b.dataset.tab; draw(); }));
     $("#mine", root)?.addEventListener("change", (e) => { mine = e.target.checked; draw(); });
     $$("[data-req]", root).forEach((tr) => tr.addEventListener("click", (e) => { if (!e.target.closest("button")) detail(tr.dataset.req); }));
@@ -63,8 +63,8 @@ export async function render({ root, claims, navigate }) {
     const r = await api(`/transfer-requests/${id}`);
     const pending = r.effective_status === "PENDENTE_APROVACAO";
     const ownRequest = r.created_by === claims.sub;
-    const s = sheet({
-      title: pending && canDecide ? "Rever pedido de transferência" : "Pedido de transferência",
+    const s = drawer({
+      title: pending && canDecide ? "Rever pedido de transferência" : "Pedido de transferência", subtitle: esc(dateTime(r.created_at)),
       body: `
         <div style="text-align:center;padding:4px 0 16px"><div class="label">Montante</div>
           <div class="receipt-amount num">${esc(money(r.amount, r.currency))}</div><div style="margin-top:10px">${requestChip(r.effective_status)}</div></div>
