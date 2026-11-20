@@ -287,6 +287,26 @@ dca0276b-d89b-5c3d-ac71-3171e6284dc0GS-EU-00000001GS-AM-00000001000000000010000E
 
   Os logs mostram `lock NFS adquirido … (esperou X ms)` / `lock NFS libertado`. Teste: 20 depósitos simultâneos repartidos pelas duas api dão exatamente +20 no relatório.
 
+## Interface web (banca digital)
+
+`https://localhost/` → `https://localhost/app/`. HTML, CSS e JavaScript (módulos ES) em `frontend/`, **sem build e sem dependências externas**, servidos pelo nginx. Consome apenas as APIs existentes (mesma origem: sem CORS). Nenhuma lógica de negócio no browser.
+
+| Perfil | Páginas |
+|---|---|
+| Cliente | Resumo (património, câmbio do dia, indicadores 30 dias, evolução do saldo, atividade recente), Contas e extrato (CSV), Transferir (nacional/internacional, estimativa de câmbio, revisão, resultado), Movimentos (filtros por estado/tipo/conta, pesquisa, CSV), Comprovativo imprimível com rastreio do processamento, Beneficiários, Perfil e segurança |
+| Operador | Abertura de contas (fila KYC, dados decifrados, aprovação com escolha de moeda), Contas de clientes (consulta por IBAN, depósitos e levantamentos) |
+| Auditor | Auditoria e conformidade (consistência entre regiões, cadeia de hashes por nó, relatório diário), consulta de contas e transações |
+| Admin | Infraestrutura (estado dos 10 nós), simulação de falhas, equipa (criar acessos), auditoria, KYC |
+
+- Estados técnicos traduzidos para linguagem bancária: `CONFIRMADA` → **Processada**, `ABORTADA` → **Falhada** (com o motivo explicado), restantes → **Pendente** (a página atualiza sozinha). Os eventos do 2PC aparecem no comprovativo como "Rastreio do processamento".
+- Sessão em `sessionStorage`; o access token é renovado automaticamente com o refresh token antes de expirar.
+- Transferências enviadas com uma `Idempotency-Key` por intenção: "Tentar novamente" depois de uma falha de rede nunca duplica.
+- Design: fonte do sistema (SF Pro / Segoe UI), modo claro e escuro, `prefers-reduced-motion`, `prefers-reduced-transparency`, alto contraste, navegação por teclado, layout para desktop, tablet (menu lateral deslizante) e telemóvel (barra de separadores).
+- Segurança no browser: todo o conteúdo vindo da API é escapado antes de entrar no HTML; `Content-Security-Policy` sem scripts inline nem recursos externos, `frame-ancestors 'none'`, `nosniff`, `no-referrer`, HSTS.
+- Para abrir no Windows sem aviso de certificado, confiar na CA local (`infra/certs/ca.crt`) no repositório de certificados do utilizador.
+
+Limitação: o backend não tem endpoints de beneficiários nem de "transferências do utilizador". Os **beneficiários** e as referências das transferências **falhadas** enviadas pelo cliente ficam guardados no dispositivo (`localStorage`). As transferências processadas aparecem sempre, porque vêm dos movimentos das contas.
+
 ## Cenários de demonstração
 
 Cada script imprime o que vai fazer, executa com `curl --cacert infra/certs/ca.crt`, mostra os resultados com `jq`, termina com erro ao primeiro resultado inesperado e grava a saída em `docs/evidencias/<cenário>.log`.
@@ -380,6 +400,7 @@ global-scale-system/
 │   ├── api/                    # API pública (2 instâncias)
 │   └── coordinator/            # 2PC, recuperação, chaos, liquidação (logic.py = regras puras)
 ├── legacy-bank/src/            # Java 21: HttpsServer, DOM seguro, Ed25519, ledger de largura fixa
+├── frontend/                   # banca digital: index.html, assets/css, assets/js (módulos ES, sem build)
 ├── infra/
 │   ├── nginx/nginx.conf
 │   ├── postgres/               # postgresql.conf, pg_hba.conf (só hostssl), entrypoint, init SQL

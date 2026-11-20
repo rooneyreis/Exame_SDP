@@ -324,6 +324,7 @@ services:
     volumes:
       - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./infra/certs:/certs:ro
+      - ./frontend:/usr/share/nginx/app:ro   # interface web (HTML/CSS/JS estáticos)
     depends_on:
       auth: { condition: service_healthy }
       api-1: { condition: service_healthy }
