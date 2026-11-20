@@ -1,64 +1,95 @@
-// Painel do Auditor: fiscalização, rastreabilidade e análise financeira (só leitura).
+// Painel do Auditor: verificações independentes, só leitura.
+//  [ /admin/consistency: veredicto + números (6) ] [ cadeia de auditoria: veredicto por nó (6) ]
+//  [ eventos recentes do registo (7)             ] [ transações abortadas (5)                  ]
+//  [ alertas de fiscalização (12)                                                           ]
 import { api } from "../api.js";
-import { barChart } from "../chart.js";
-import { dateTime, money, regionName } from "../format.js";
+import { dateTime, money, REGION_CODES, regionName, time } from "../format.js";
 import { icon } from "../icons.js";
-import { $, esc } from "../ui.js";
-import { dailySeries, downloadCsv, exportButtons, kpi } from "../staff.js";
+import { $, $$, busy, esc } from "../ui.js";
+import { downloadCsv, exportButtons } from "../staff.js";
 import { pageHead } from "./common.js";
 
 const RULE_LABEL = { VALOR_ELEVADO: "Valor elevado", VELOCIDADE: "Frequência anormal", FALHAS_REPETIDAS: "Falhas repetidas",
   LIQUIDACAO_REJEITADA: "Liquidação rejeitada", SEM_APROVACAO: "Sem aprovação", PENDENTE_HA_MUITO: "Pendente há muito",
   FALHA_DE_PROCESSAMENTO: "Recuperação automática" };
 
+function consistencyHtml(c) {
+  const ok = c.ok;
+  return `
+    <div class="verdict ${ok ? "ok" : "bad"}"><span class="v-icon">${icon(ok ? "shield" : "alert")}</span>
+      <div><b>${ok ? "Sem discrepâncias entre regiões" : `${c.problems.length} discrepância(s) encontrada(s)`}</b>
+        <p>Cada transferência processada tem exatamente um débito e um crédito; nenhuma anulada movimentou dinheiro.</p></div></div>
+    <div class="mini-stats" style="--n:4">
+      <div><span>Verificadas</span><b>${c.checked_transactions}</b></div><div><span>Processadas</span><b>${c.confirmed}</b></div>
+      <div><span>Anuladas</span><b>${c.aborted}</b></div><div><span>Em curso</span><b>${c.in_progress.length}</b></div></div>
+    <div class="mini-stats" style="--n:${REGION_CODES.length}">
+      ${REGION_CODES.map((r) => `<div><span>Reservas pendentes · ${r}</span><b>${(c.prepared_xacts?.[r] || []).length}</b></div>`).join("")}</div>
+    ${c.problems.length ? `<div class="banner banner-bad" style="margin:14px 22px">${icon("alert")}<span class="mono" style="font-size:.78rem">${esc(JSON.stringify(c.problems.slice(0, 3)))}</span></div>` : ""}`;
+}
+
+function chainHtml(audit) {
+  if (!audit) return `<div class="empty-sm">Sem registos de auditoria hoje.</div>`;
+  const files = Object.entries(audit.files);
+  const lines = files.reduce((s, [, f]) => s + f.lines, 0);
+  return `
+    <div class="verdict ${audit.ok ? "ok" : "bad"}"><span class="v-icon">${icon(audit.ok ? "fingerprint" : "alert")}</span>
+      <div><b>${audit.ok ? "Cadeia de hashes íntegra" : "Adulteração detetada"}</b>
+        <p>${lines} registos de ${files.length} nós, encadeados por SHA-256 no NFS.</p></div></div>
+    <div style="border-top:1px solid var(--line)">${files.map(([name, f]) => `
+      <div class="chain-row"><span class="status-dot ${f.ok ? "" : "down"}"></span><span class="mono">${esc(name.replace(/\.log$/, ""))}</span>
+        <span class="hint num">${f.lines} linhas</span>
+        <span class="chip ${f.ok ? "status-done" : "status-failed"}">${f.ok ? "íntegra" : `linha ${f.first_bad_line}`}</span></div>`).join("")}</div>`;
+}
+
 export async function render({ root, navigate }) {
   const today = new Date().toISOString().slice(0, 10);
-  const [o, sus, cons, audit] = await Promise.all([
-    api("/admin/overview"), api("/admin/suspicious"), api("/admin/consistency"),
-    api(`/admin/audit?date=${today}`).catch(() => null),
+  const [cons, audit, events, sus] = await Promise.all([
+    api("/admin/consistency"), api(`/admin/audit?date=${today}`).catch(() => null),
+    api(`/admin/audit/events?date=${today}&limit=10`).catch(() => ({ items: [] })), api("/admin/suspicious"),
   ]);
-  const count = (pred) => o.transactions.filter(pred).reduce((s, r) => s + Number(r.n), 0);
-  const high = sus.findings.filter((f) => f.severity === "alta").length;
 
   root.innerHTML = `
-    ${pageHead("Painel de auditoria", "Fiscalização independente de todas as regiões. Acesso exclusivamente de leitura.", exportButtons())}
-    <div class="grid g-4 keep-2">
-      ${kpi("Consistência entre regiões", cons.ok ? `<span style="color:var(--good-ink)">Íntegra</span>` : `<span style="color:var(--bad-ink)">${cons.problems.length} problema(s)</span>`,
-        `${cons.checked_transactions} transferências verificadas`, "shield")}
-      ${kpi("Registo de auditoria (hoje)", audit ? (audit.ok ? `<span style="color:var(--good-ink)">Íntegro</span>` : `<span style="color:var(--bad-ink)">Adulterado</span>`) : "—",
-        audit ? `${Object.values(audit.files).reduce((s, f) => s + f.lines, 0)} registos em ${Object.keys(audit.files).length} nós` : "sem registos", "fingerprint")}
-      ${kpi("Alertas", String(sus.findings.length), `${high} de severidade alta`, "alert")}
-      ${kpi("Falhas de processamento", String(sus.failures.length), "transferências anuladas (30 dias)", "x")}
+    ${pageHead("Painel de auditoria", "Verificações independentes sobre todas as regiões. Acesso exclusivamente de leitura.", exportButtons())}
+    <div class="bento">
+      <section class="panel c-6"><div class="panel-head"><div><h3>Consistência do 2PC</h3><div class="sub">/admin/consistency · todos os shards</div></div>
+        <button class="btn btn-secondary btn-sm" id="re-cons">${icon("refresh")} Verificar</button></div>
+        <div id="cons">${consistencyHtml(cons)}</div></section>
+      <section class="panel c-6"><div class="panel-head"><div><h3>Cadeia de auditoria</h3><div class="sub">registo de hoje, validado linha a linha</div></div>
+        <button class="btn btn-secondary btn-sm" id="re-chain">${icon("refresh")} Verificar</button></div>
+        <div id="chain">${chainHtml(audit)}</div></section>
     </div>
-    <div class="grid g-main" style="margin-top:20px">
-      <section class="card"><div class="card-head"><div><h3>Transferências processadas por dia</h3><p class="hint">últimos 14 dias · ${count((r) => r.state === "CONFIRMADA")} processadas no total</p></div></div><div id="daily"></div></section>
-      <section class="card card-pad"><h3>Volumes por região</h3>
-        <dl class="kv" style="margin-top:8px">${Object.entries(o.balances).flatMap(([reg, rows]) => rows.map((b) => `
-          <dt>${regionName(reg)} · ${esc(b.currency)}</dt><dd class="num">${esc(money(b.total, b.currency))}</dd>`)).join("")}
-          <dt>Liquidações rejeitadas</dt><dd class="num">${o.settlement.find((s) => s.settlement_status === "REJEITADA")?.n || 0}</dd>
-          <dt>Pedidos a aguardar aprovação</dt><dd class="num">${o.pending_approvals.n}</dd></dl>
-        <div class="row wrap" style="margin-top:14px;gap:8px"><a class="btn btn-secondary btn-sm" href="#/admin/transfers">${icon("transfer")} Transferências</a>
-          <a class="btn btn-secondary btn-sm" href="#/audit/events">${icon("doc")} Registos</a><a class="btn btn-secondary btn-sm" href="#/audit/compliance">${icon("shield")} Conformidade</a></div>
-      </section>
+    <div class="bento">
+      <section class="panel c-7"><div class="panel-head"><div><h3>Eventos recentes</h3><div class="sub">${events.total ?? events.items.length} eventos hoje em todos os nós</div></div><a class="link-btn" href="#/audit/events">Ver registo</a></div>
+        <div>${events.items.map((e) => `
+          <div class="event-row"><span class="mono">${esc(time(e.ts))}</span>
+            <span style="min-width:0"><b>${esc(e.event || "")}</b><span class="sub">${esc(e._file?.replace(/\.log$/, "") || "")}${e.actor_role ? ` · ${esc(e.actor_role)}` : ""}${e.iban ? ` · ${esc(e.iban)}` : ""}${e.tx_id ? ` · ${esc(String(e.tx_id).slice(0, 8))}` : ""}</span></span>
+            <span class="chip ${e.result && e.result !== "OK" ? "status-failed" : ""}">${esc(e.result || "OK")}</span></div>`).join("") ||
+          `<div class="empty-sm">Sem eventos hoje.</div>`}</div></section>
+      <section class="panel c-5"><div class="panel-head"><div><h3>Transações abortadas</h3><div class="sub">últimos 30 dias · ${sus.failures.length} no total</div></div></div>
+        <div>${sus.failures.slice(0, 7).map((t) => `
+          <div class="queue-item" data-tx="${esc(t.tx_id)}" style="cursor:pointer">
+            <span class="tx-icon failed">${icon("x")}</span>
+            <span class="q-main"><b>${esc(money(t.amount, t.from_currency))}</b><span>${esc(t.failure_reason || "—")}</span></span>
+            <span class="hint num" style="white-space:nowrap">${esc(dateTime(t.created_at))}</span></div>`).join("") ||
+          `<div class="empty-sm">Nenhuma transação abortada.</div>`}</div></section>
     </div>
-    <section class="card" style="margin-top:20px">
-      <div class="card-head"><div><h3>Transações suspeitas e inconsistências</h3><p class="hint">Regras aplicadas aos registos reais dos últimos 30 dias</p></div></div>
-      <div style="margin-top:10px">${sus.findings.length ? sus.findings.slice(0, 40).map((f) => `
+    <section class="panel mt"><div class="panel-head"><div><h3>Alertas de fiscalização</h3><div class="sub">regras aplicadas aos registos reais dos últimos 30 dias</div></div><a class="link-btn" href="#/audit/compliance">Conformidade</a></div>
+      <div>${sus.findings.slice(0, 8).map((f) => `
         <div class="finding" ${f.tx_id ? `data-tx="${esc(f.tx_id)}" style="cursor:pointer"` : ""}>
           <span class="sev sev-${esc(f.severity)}" title="severidade ${esc(f.severity)}"></span>
-          <div><b>${esc(RULE_LABEL[f.rule] || f.rule)}</b><div class="hint">${esc(f.detail)}</div><div class="hint">${esc(sus.rules[f.rule] || "")}</div></div>
-          <span class="hint num" style="white-space:nowrap">${esc(dateTime(f.at))}</span></div>`).join("")
-        : `<div class="empty"><div class="tx-icon in">${icon("check")}</div><h3>Nenhum alerta</h3><p>Nenhuma regra foi ativada no período.</p></div>`}</div>
-    </section>
-    <section class="card" style="margin-top:20px">
-      <div class="card-head"><h3>Falhas de processamento</h3></div>
-      <div class="table-wrap" style="margin-top:8px"><table class="table"><thead><tr><th>Data</th><th>Origem → Destino</th><th class="r">Montante</th><th>Motivo</th></tr></thead><tbody>
-        ${sus.failures.slice(0, 30).map((t) => `<tr class="clickable" data-tx="${esc(t.tx_id)}"><td class="num" style="white-space:nowrap">${esc(dateTime(t.created_at))}</td>
-          <td class="mono">${esc(t.from_iban)} → ${esc(t.to_iban)}</td><td class="r num">${esc(money(t.amount, t.from_currency))}</td><td class="soft">${esc(t.failure_reason || "—")}</td></tr>`).join("")
-          || `<tr><td colspan="4"><div class="empty">Sem falhas no período.</div></td></tr>`}</tbody></table></div>
-    </section>`;
-  barChart($("#daily", root), dailySeries(o.daily), { format: (v) => `${v} transferências` });
-  root.querySelectorAll("[data-tx]").forEach((el) => el.addEventListener("click", () => navigate(`/tx/${encodeURIComponent(el.dataset.tx)}`)));
+          <div><b>${esc(RULE_LABEL[f.rule] || f.rule)}</b><div class="hint">${esc(f.detail)}</div></div>
+          <span class="hint num" style="white-space:nowrap">${esc(dateTime(f.at))}</span></div>`).join("") ||
+        `<div class="empty-sm">${icon("check")} Nenhuma regra foi ativada no período.</div>`}</div></section>`;
+
+  $("#re-cons", root).addEventListener("click", async (e) => {
+    busy(e.currentTarget, true, "A verificar…");
+    try { $("#cons", root).innerHTML = consistencyHtml(await api("/admin/consistency")); } finally { busy(e.currentTarget, false); }
+  });
+  $("#re-chain", root).addEventListener("click", async (e) => {
+    busy(e.currentTarget, true, "A verificar…");
+    try { $("#chain", root).innerHTML = chainHtml(await api(`/admin/audit?date=${today}`).catch(() => null)); } finally { busy(e.currentTarget, false); }
+  });
+  $$("[data-tx]", root).forEach((el) => el.addEventListener("click", () => navigate(`/tx/${encodeURIComponent(el.dataset.tx)}`)));
   root.querySelector('[data-export="pdf"]').addEventListener("click", () => window.print());
   root.querySelector('[data-export="csv"]').addEventListener("click", () => downloadCsv(`relatorio-auditoria-${today}.csv`,
     ["tipo", "regra", "severidade", "data", "detalhe", "referencia"],

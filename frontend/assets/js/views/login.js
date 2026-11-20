@@ -30,7 +30,7 @@ export function authHero() {
     <div class="hero-points">
       <div class="hero-point">${icon("lock")}<b>Cifrado de ponta a ponta</b><span>TLS em todas as ligações</span></div>
       <div class="hero-point">${icon("shield")}<b>Operações garantidas</b><span>Nunca sai sem chegar</span></div>
-      <div class="hero-point">${icon("globe")}<b>Duas regiões</b><span>Lisboa · Nova Iorque</span></div>
+      <div class="hero-point">${icon("globe")}<b>Três regiões</b><span>Lisboa · Nova Iorque · Maputo</span></div>
     </div>
     <p class="hero-foot">Global Scale Corporation · Plataforma de demonstração académica (ISUTC). Não utilize dados reais.</p>
   </section>`;
