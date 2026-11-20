@@ -1,17 +1,17 @@
 
 ══════ Cenário 09 — Queda de um shard durante o 2PC ══════
-(2026-11-20T09:58:34Z)
-  saldos antes: GS-EU-00000002=4040.92 EUR   GS-AM-00000003=3625.31 USD
+(2026-11-20T13:23:31Z)
+  saldos antes: GS-EU-00000002=5290.00 EUR   GS-AM-00000003=2375.40 USD
 
 ▶ 1. Ativar pausa de 20 s depois do PREPARE (antes da decisão)
-  POST /admin/chaos -> HTTP 200 (X-Served-By: api-1)
+  POST /admin/chaos -> HTTP 200 (X-Served-By: api-2)
   chaos no coordenador: {"pause_before_prepare":0,"pause_after_prepare":20,"crash_after_prepare":false,"crash_after_decision":false,"fail_participant":null}
 
 ▶ 2. O Bruno inicia a transferência (em segundo plano)
   POST /auth/login -> HTTP 200
   os dois shards já votaram SIM e mantêm as transações preparadas (com os locks):
-  pg-europa: 1_YWEyOWExMGMtYWRkMy01MjM2LTgxMmEtZTk0N2U5NTM5OTEw_RVU=  (preparada às 09:58:34)
-  pg-america: 1_YWEyOWExMGMtYWRkMy01MjM2LTgxMmEtZTk0N2U5NTM5OTEw_QU0=  (preparada às 09:58:34)
+  pg-europa: 1_MGJiZDBkNzAtNDJiZi01MzZhLWIwZjMtZTA2Mzk2OWY5Yzlh_RVU=  (preparada às 13:23:32)
+  pg-america: 1_MGJiZDBkNzAtNDJiZi01MzZhLWIwZjMtZTA2Mzk2OWY5Yzlh_QU0=  (preparada às 13:23:32)
   pg-africa: nenhuma
 
 ▶ 3. Derrubar o pg-america enquanto o coordenador ainda não decidiu
@@ -19,14 +19,14 @@
   ✔ pg-america parado (a réplica continua, mas só aceita leituras)
   à espera do fim da pausa...
   resposta: HTTP 202  state=DECISAO_COMMIT
-    09:58:34.858  INICIADA   {"kind":"DISTRIBUIDA","amount":"200.00","signer":"api-2","fx_rate":"1.08000000","converted":"216.00","approved_by":null,"to_currency":"USD","initiated_by":"11111111-0000-4000-8000-000000000002","from_currency":"EUR","initiated_role":"cliente"}
-    09:58:34.863  PREPARANDO
-    09:58:34.882  PREPARADO_EU   {"iban":"GS-EU-00000002","side":"DEBITO"}
-    09:58:34.900  PREPARADO_AM   {"iban":"GS-AM-00000003","side":"CREDITO"}
-    09:58:34.902  PAUSA_CHAOS   {"seconds":20}
-    09:58:54.908  DECISAO_COMMIT
-    09:58:54.912  COMMIT_EU
-    09:58:54.916  COMMIT_PENDENTE_AM   {"error":"AdminShutdown"}
+    13:23:32.636  INICIADA   {"kind":"DISTRIBUIDA","amount":"200.00","signer":"api-1","fx_rate":"1.08000000","converted":"216.00","approved_by":null,"to_currency":"USD","initiated_by":"11111111-0000-4000-8000-000000000002","from_currency":"EUR","initiated_role":"cliente"}
+    13:23:32.646  PREPARANDO
+    13:23:32.680  PREPARADO_EU   {"iban":"GS-EU-00000002","side":"DEBITO"}
+    13:23:32.711  PREPARADO_AM   {"iban":"GS-AM-00000003","side":"CREDITO"}
+    13:23:32.715  PAUSA_CHAOS   {"seconds":20}
+    13:23:52.757  DECISAO_COMMIT
+    13:23:52.764  COMMIT_EU
+    13:23:52.769  COMMIT_PENDENTE_AM   {"error":"AdminShutdown"}
   ✔ decisão COMMIT gravada; Europa fez commit, América pendente
 
 ▶ 4. Enquanto o pg-america está em baixo, o recovery loop tenta com backoff exponencial
@@ -40,28 +40,28 @@
   ✔ pg-america está healthy
   a aguardar o recovery loop...
   ✔ recovery fez COMMIT PREPARED no pg-america → CONFIRMADA
-    09:58:34.858  INICIADA   {"kind":"DISTRIBUIDA","amount":"200.00","signer":"api-2","fx_rate":"1.08000000","converted":"216.00","approved_by":null,"to_currency":"USD","initiated_by":"11111111-0000-4000-8000-000000000002","from_currency":"EUR","initiated_role":"cliente"}
-    09:58:34.863  PREPARANDO
-    09:58:34.882  PREPARADO_EU   {"iban":"GS-EU-00000002","side":"DEBITO"}
-    09:58:34.900  PREPARADO_AM   {"iban":"GS-AM-00000003","side":"CREDITO"}
-    09:58:34.902  PAUSA_CHAOS   {"seconds":20}
-    09:58:54.908  DECISAO_COMMIT
-    09:58:54.912  COMMIT_EU
-    09:58:54.916  COMMIT_PENDENTE_AM   {"error":"AdminShutdown"}
-    09:59:05.263  RECUPERACAO_COMMIT_AM
-    09:59:05.268  CONFIRMADA   {"recovered":true}
+    13:23:32.636  INICIADA   {"kind":"DISTRIBUIDA","amount":"200.00","signer":"api-1","fx_rate":"1.08000000","converted":"216.00","approved_by":null,"to_currency":"USD","initiated_by":"11111111-0000-4000-8000-000000000002","from_currency":"EUR","initiated_role":"cliente"}
+    13:23:32.646  PREPARANDO
+    13:23:32.680  PREPARADO_EU   {"iban":"GS-EU-00000002","side":"DEBITO"}
+    13:23:32.711  PREPARADO_AM   {"iban":"GS-AM-00000003","side":"CREDITO"}
+    13:23:32.715  PAUSA_CHAOS   {"seconds":20}
+    13:23:52.757  DECISAO_COMMIT
+    13:23:52.764  COMMIT_EU
+    13:23:52.769  COMMIT_PENDENTE_AM   {"error":"AdminShutdown"}
+    13:24:04.581  RECUPERACAO_COMMIT_AM
+    13:24:04.589  CONFIRMADA   {"recovered":true}
 
 ▶ 6. Verificação: sem dinheiro perdido
   POST /admin/chaos -> HTTP 200 (X-Served-By: api-1)
   chaos no coordenador: {"pause_before_prepare":0,"pause_after_prepare":0,"crash_after_prepare":false,"crash_after_decision":false,"fail_participant":null}
-  GS-EU-00000002: 4040.92 → 3840.92 EUR    GS-AM-00000003: 3625.31 → 3841.31 USD
+  GS-EU-00000002: 5290.00 → 5090.00 EUR    GS-AM-00000003: 2375.40 → 2591.40 USD
   ✔ −200.00 EUR / +216.00 USD
   pg-europa: nenhuma
   pg-america: nenhuma
   pg-africa: nenhuma
   GET /admin/consistency -> HTTP 200 (X-Served-By: api-2)
-    {"ok":true,"checked_transactions":589,"confirmed":532,"aborted":57,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[],"AF":[]},"problems":[]}
+    {"ok":true,"checked_transactions":22,"confirmed":16,"aborted":6,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[],"AF":[]},"problems":[]}
   ✔ /admin/consistency OK: sem dinheiro perdido nem duplicado
 
 ══════ Cenário 09 concluído ══════
-(2026-11-20T09:59:08Z)
+(2026-11-20T13:24:11Z)

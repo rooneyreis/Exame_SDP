@@ -1,13 +1,13 @@
 
 ══════ Cenário 11 — 50 transferências concorrentes ══════
-(2026-11-20T09:59:17Z)
+(2026-11-20T13:24:20Z)
 
 ▶ 1. A lançar 50 transferências em paralelo (asyncio + httpx)
   Ana GS-EU-00000001 ⇄ Bruno GS-EU-00000002 (LOCAL) e Ana GS-EU-00000001 ⇄ David GS-AM-00000001 (DISTRIBUIDA)
-  50 transferências em 2.23s  estados={'CONFIRMADA': 50}  tipos={'LOCAL': 27, 'DISTRIBUIDA': 23}
-  GS-EU-00000001: 1202.27 → 1061.66  Δ=-140.61  esperado=-140.61  ✔
-  GS-EU-00000002: 3887.22 → 3894.72  Δ=7.50  esperado=7.50  ✔
-  GS-AM-00000001: 17814.79 → 17958.56  Δ=143.77  esperado=143.77  ✔
+  50 transferências em 3.89s  estados={'CONFIRMADA': 50}  tipos={'LOCAL': 27, 'DISTRIBUIDA': 23}
+  GS-EU-00000001: 9783.59 → 9642.98  Δ=-140.61  esperado=-140.61  ✔
+  GS-EU-00000002: 5136.30 → 5143.80  Δ=7.50  esperado=7.50  ✔
+  GS-AM-00000001: 10058.00 → 10201.77  Δ=143.77  esperado=143.77  ✔
   pendentes=0  abortadas por lock_timeout/deadlock=0
   ✔ conservação do dinheiro verificada
 
@@ -16,8 +16,8 @@
   pg-america: nenhuma
   pg-africa: nenhuma
   GET /admin/consistency -> HTTP 200 (X-Served-By: api-1)
-    {"ok":true,"checked_transactions":640,"confirmed":583,"aborted":57,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[],"AF":[]},"problems":[]}
+    {"ok":true,"checked_transactions":73,"confirmed":67,"aborted":6,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[],"AF":[]},"problems":[]}
   ✔ /admin/consistency OK: sem dinheiro perdido nem duplicado
 
 ══════ Cenário 11 concluído ══════
-(2026-11-20T09:59:20Z)
+(2026-11-20T13:24:26Z)

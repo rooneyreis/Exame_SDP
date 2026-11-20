@@ -875,9 +875,9 @@ table.sr-only, .sr-only { display: block; margin: -1px; padding: 0; border: 0; c
 .stepper .s-text { min-width: 0; }
 .stepper .s-text b { display: block; font-size: .84rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .stepper .s-text span { display: block; font-size: .72rem; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.step { border: 0; margin: 0; padding: 0; display: grid; gap: 16px; min-width: 0; }
-.step[hidden], .step-actions [hidden] { display: none; }
-.step legend { font: 640 1.05rem var(--font-display); margin-bottom: 4px; padding: 0; }
+.reg-form .step { border: 0; margin: 0; padding: 0; display: grid; gap: 16px; min-width: 0; }
+.reg-form .step[hidden], .step-actions [hidden] { display: none; }
+.reg-form .step legend { font: 640 1.05rem var(--font-display); margin-bottom: 4px; padding: 0; }
 .step-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 22px; }
 .step-actions .btn { min-width: 150px; }
 .region-choices { display: grid; gap: 10px; }

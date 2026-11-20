@@ -1,27 +1,27 @@
 
 ══════ Cenário 08 — Queda do primário de um shard e failover ══════
-(2026-11-20T09:59:39Z)
+(2026-11-20T13:24:50Z)
 
 ▶ 1. Situação inicial
     pg-europa: primário (réplicas a receber: 1)
     pg-europa-replica: réplica (réplicas a receber: 0)
   POST /auth/login -> HTTP 200
-  POST /transfers -> HTTP 201 (X-Served-By: api-1)
+  POST /transfers -> HTTP 201 (X-Served-By: api-2)
   ✔ transferência EU → EU funciona (HTTP 201)
 
 ▶ 2. Derrubar o primário pg-europa
   $ docker stop pg-europa
     pg-europa: EM BAIXO
     pg-europa-replica: réplica (réplicas a receber: 0)
-  POST /transfers -> HTTP 503 (X-Served-By: api-1)
+  POST /transfers -> HTTP 503 (X-Served-By: api-2)
   durante a falha: HTTP 503 — shard indisponível
   ✔ sem primário na Europa não há escritas (a réplica só aceita leituras)
-  GET /accounts -> HTTP 200 (X-Served-By: api-2)
+  GET /accounts -> HTTP 200 (X-Served-By: api-1)
   ✔ leituras continuam a funcionar a partir da réplica (target_session_attrs=any) (HTTP 200)
     [
       {
         "iban": "GS-EU-00000001",
-        "balance": "742.66"
+        "balance": "9323.98"
       }
     ]
 
@@ -39,11 +39,11 @@
 
 ▶ 4. As transferências voltam a funcionar, sem mudar configuração nenhuma
   (os serviços ligam-se com host=pg-europa…,pg-europa-replica… target_session_attrs=read-write)
-  POST /transfers -> HTTP 201 (X-Served-By: api-2)
-  ✔ LOCAL EU → EU no novo primário (HTTP 201)
   POST /transfers -> HTTP 201 (X-Served-By: api-1)
+  ✔ LOCAL EU → EU no novo primário (HTTP 201)
+  POST /transfers -> HTTP 201 (X-Served-By: api-2)
   ✔ DISTRIBUIDA EU → AM (2PC) no novo primário (HTTP 201)
-  GET /health -> HTTP 200 (X-Served-By: api-2)
+  GET /health -> HTTP 200 (X-Served-By: api-1)
   a api liga-se agora a: 172.28.0.62 (pg-europa-replica = 172.28.0.62)
 
 ▶ 5. O antigo primário volta e junta-se sozinho como réplica (sem split-brain)
@@ -53,8 +53,8 @@
     [pg-entrypoint:pg-europa] clone concluído: este nó arranca como RÉPLICA (standby) de pg-europa-replica.global.local
     pg-europa: réplica (réplicas a receber: 0)
     pg-europa-replica: primário (réplicas a receber: 1)
-  GET /admin/consistency -> HTTP 200 (X-Served-By: api-2)
-    {"ok":true,"checked_transactions":647,"confirmed":590,"aborted":57,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[],"AF":[]},"problems":[]}
+  GET /admin/consistency -> HTTP 200 (X-Served-By: api-1)
+    {"ok":true,"checked_transactions":80,"confirmed":74,"aborted":6,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[],"AF":[]},"problems":[]}
   ✔ /admin/consistency OK: sem dinheiro perdido nem duplicado
 
 ▶ 6. Repor a topologia original (failback)
@@ -63,4 +63,4 @@
   ✔ pg-europa é de novo o primário
 
 ══════ Cenário 08 concluído ══════
-(2026-11-20T10:00:09Z)
+(2026-11-20T13:25:21Z)

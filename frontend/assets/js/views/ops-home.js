@@ -12,9 +12,10 @@ import { pageHead } from "./common.js";
 const IN_PROGRESS = ["PENDENTE_APROVACAO", "EM_EXECUCAO"];
 
 export async function render({ root, navigate }) {
-  const [mine, settings, pendingKyc] = await Promise.all([
+  const [mine, settings, pendingKyc, accountReqs] = await Promise.all([
     api("/transfer-requests?mine=true&limit=300"), api("/admin/settings"),
     api("/admin/users?status=PENDENTE_VERIFICACAO").catch(() => []),
+    api("/admin/account-requests?status=PENDENTE").catch(() => []),
   ]);
   const lim = Object.fromEntries(settings.map((s) => [s.key, s.value]));
   const todayStr = new Date().toDateString();
@@ -39,7 +40,7 @@ export async function render({ root, navigate }) {
     </button>`;
 
   root.innerHTML = `
-    ${pageHead("Balcão", `${pendingKyc.length} verificação(ões) pendente(s) · ${inProgress.length} pedido(s) em curso · ${today.length} registado(s) hoje`,
+    ${pageHead("Balcão", `${pendingKyc.length} verificação(ões) pendente(s) · ${accountReqs.length} pedido(s) de contas · ${inProgress.length} transferência(s) em curso · ${today.length} registada(s) hoje`,
       `<a class="btn btn-primary" href="#/ops/transfer">${icon("plus")} Nova transferência</a>`)}
     <div class="bento">
       <section class="panel c-7">
@@ -47,7 +48,7 @@ export async function render({ root, navigate }) {
           <a class="link-btn" href="#/ops/kyc">Abrir fila completa</a></div>
         <div id="kyc-list">${pendingKyc.slice(0, 6).map(kycRow).join("") ||
           `<div class="empty-sm">${icon("check")} Nenhum pedido a aguardar verificação.</div>`}</div>
-        ${pendingKyc.length > 6 ? `<div class="panel-foot"><span>Mais ${pendingKyc.length - 6} na fila</span><a href="#/ops/kyc">Ver todos</a></div>` : ""}
+        <div class="panel-foot"><span>${pendingKyc.length > 6 ? `Mais ${pendingKyc.length - 6} na fila de KYC · ` : ""}${icon("bank")} ${accountReqs.length} pedido(s) de contas adicionais ou encerramento</span><a href="#/ops/account-requests">Decidir pedidos de contas</a></div>
       </section>
       <section class="panel c-5">
         <div class="panel-head"><div><h3>Atendimento ao balcão</h3><div class="sub">depósitos e levantamentos numa conta</div></div></div>

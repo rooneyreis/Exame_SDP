@@ -1,6 +1,6 @@
 
 ══════ Cenário 07 — Queda do serviço de autenticação ══════
-(2026-11-20T09:57:21Z)
+(2026-11-20T13:21:55Z)
 
 ▶ 1. Login normal e pedido à API
   POST /auth/login -> HTTP 200
@@ -9,7 +9,7 @@
     [
       {
         "iban": "GS-AM-00000001",
-        "balance": "17756.79"
+        "balance": "10000.00"
       }
     ]
   kid do token: 7OvHvs650CnDr6UsgnvvdLPI9UA3HDC_3ko6Xw4WsPg
@@ -42,4 +42,4 @@
   ✔ login volta a funcionar
 
 ══════ Cenário 07 concluído ══════
-(2026-11-20T09:57:30Z)
+(2026-11-20T13:22:05Z)

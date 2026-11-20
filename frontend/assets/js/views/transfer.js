@@ -7,12 +7,14 @@ import { $, $$, busy, esc, fieldError, sheet, statusChip } from "../ui.js";
 import { transferStatus } from "../format.js";
 import { pageHead } from "./common.js";
 
-const MAX_PER_TRANSFER = 10000;
+const MAX_PER_TRANSFER_EUR = 10000;   // valor por omissão; o real vem de /me/limits (em EUR)
 
 export function friendlyFailure(reason = "") {
   const r = reason.toLowerCase();
   if (r.includes("saldo insuficiente")) return "Saldo insuficiente na conta de origem.";
+  if (r.includes("limite diário do cliente")) return "Ultrapassa o seu limite diário (soma dos envios de todas as suas contas, em EUR).";
   if (r.includes("limite diário")) return "Ultrapassa o limite diário de transferências desta conta.";
+  if (r.includes("máximo por transferência")) return "Ultrapassa o montante máximo por transferência.";
   if (r.includes("não existe")) return "A conta de destino não existe. Confirme o IBAN.";
   if (r.includes("bloqueada") && r.includes("destino")) return "A conta de destino não pode receber fundos de momento.";
   if (r.includes("lock_timeout")) return "A conta estava ocupada com outra operação. Tente novamente dentro de instantes.";
@@ -29,7 +31,7 @@ function normalizeIban(v) {
 }
 
 export async function render({ root, query, navigate }) {
-  const [accounts, rates] = await Promise.all([myAccounts(), fxRates()]);
+  const [accounts, rates, limits] = await Promise.all([myAccounts(), fxRates(), api("/me/limits").catch(() => null)]);
   const active = accounts.filter((a) => a.status === "ATIVA");
   if (!active.length) {
     root.innerHTML = `${pageHead("Transferir")}<div class="card"><div class="empty"><h3>Sem contas ativas</h3></div></div>`;
@@ -39,12 +41,20 @@ export async function render({ root, query, navigate }) {
   const saved = beneficiaries.all();
   const state = {
     from: active.find((a) => a.iban === query.get("from")) || active[0],
-    mode: query.get("to") ? "new" : saved.length ? "saved" : "new",
+    mode: query.get("own") && active.length > 1 ? "own" : query.get("to") ? "new" : saved.length ? "saved" : "new",
     to: query.get("to") || "", name: query.get("name") || "", save: !query.get("to") || !beneficiaries.byIban(query.get("to") || ""),
     amount: "", description: "", todayDebits: 0,
   };
   const pre = beneficiaries.byIban(state.to);
   if (pre) { state.mode = "saved"; state.name = pre.name; }
+  const ownAccount = (ib) => active.find((a) => a.iban === ib);
+  if (ownAccount(state.to) && state.to !== state.from.iban) state.mode = "own";
+  if (state.mode === "own" && !ownAccount(state.to)) state.to = active.find((a) => a.iban !== state.from.iban)?.iban || "";
+  // Máximo por transferência: definido em EUR, convertido para a moeda da conta de origem.
+  const maxIn = (cur) => {
+    const eur = Number(limits?.max_transfer_eur || MAX_PER_TRANSFER_EUR);
+    return cur === "EUR" ? eur : (rates.EUR?.[cur] ? eur * rates.EUR[cur] : eur);
+  };
 
   root.innerHTML = `
     ${pageHead("Transferir", "Para contas Global Scale na Europa, na América e em África. As transferências internacionais são convertidas ao câmbio do dia.")}
@@ -67,10 +77,12 @@ export async function render({ root, query, navigate }) {
           <div class="step-body">
             <div class="row between wrap"><h3>Para</h3>
               <div class="segmented" role="group" aria-label="Tipo de destinatário">
+                <button type="button" data-mode="own" aria-pressed="${state.mode === "own"}" ${active.length > 1 ? "" : "disabled title=\"Só tem uma conta ativa\""}>Entre as minhas contas</button>
                 <button type="button" data-mode="saved" aria-pressed="${state.mode === "saved"}" ${saved.length ? "" : "disabled"}>Beneficiários</button>
                 <button type="button" data-mode="new" aria-pressed="${state.mode === "new"}">Novo destinatário</button>
               </div>
             </div>
+            <div id="to-own" ${state.mode === "own" ? "" : "hidden"}></div>
             <div id="to-saved" ${state.mode === "saved" ? "" : "hidden"}>
               <div class="choice-grid" role="radiogroup" aria-label="Beneficiário">
                 ${saved.map((b) => `<button type="button" class="choice" role="radio" data-ben="${esc(b.iban)}" aria-checked="${b.iban === state.to}">
@@ -100,7 +112,7 @@ export async function render({ root, query, navigate }) {
               <label for="amount" class="sr-only">Montante</label>
               <div class="input-affix"><input class="input amount-input num" id="amount" inputmode="decimal" placeholder="0,00" autocomplete="off"><span class="affix" id="amount-cur">${esc(state.from.currency)}</span></div>
               <div class="row wrap" style="gap:8px">${[50, 100, 250, 1000].map((v) => `<button type="button" class="btn btn-secondary btn-sm" data-quick="${v}">${esc(money(v, state.from.currency))}</button>`).join("")}</div>
-              <p class="hint" id="limit-hint">Máximo ${esc(money(MAX_PER_TRANSFER, state.from.currency))} por transferência.</p>
+              <p class="hint" id="limit-hint"></p>
             </div>
             <div class="field"><label for="desc">Descrição <span class="muted">(opcional)</span></label>
               <input class="input" id="desc" maxlength="80" placeholder="Ex.: Renda de novembro"></div>
@@ -115,14 +127,37 @@ export async function render({ root, query, navigate }) {
 
   const $in = (id) => $(`#${id}`, root);
 
-  function toIban() { return state.mode === "saved" ? state.to : normalizeIban($in("to-iban").value.trim()); }
-  function toName() { return state.mode === "saved" ? (beneficiaries.byIban(state.to)?.name || "") : $in("to-name").value.trim(); }
+  function toIban() { return state.mode === "new" ? normalizeIban($in("to-iban").value.trim()) : state.to; }
+  function toName() {
+    if (state.mode === "own") { const a = ownAccount(state.to); return a ? `Conta própria · ${REGIONS[a.region]?.city || a.region} (${a.currency})` : ""; }
+    return state.mode === "saved" ? (beneficiaries.byIban(state.to)?.name || "") : $in("to-name").value.trim();
+  }
+  function drawOwn() {
+    const others = active.filter((a) => a.iban !== state.from.iban);
+    if (state.mode === "own" && !others.some((a) => a.iban === state.to)) state.to = others[0]?.iban || "";
+    $in("to-own").innerHTML = `<div class="choice-grid" role="radiogroup" aria-label="Conta de destino">${others.map((a) => `
+      <button type="button" class="choice" role="radio" data-own="${esc(a.iban)}" aria-checked="${a.iban === state.to}">
+        <span class="region-tag">${esc(a.region)}</span>
+        <span class="grow"><b>${esc(REGIONS[a.region]?.city || a.region)} · ${esc(a.currency)}</b><span class="mono">${esc(fmtIban(a.iban))}</span></span></button>`).join("")}</div>
+      <p class="hint" style="margin-top:8px">${icon("info")} Entre as suas contas não conta para o limite diário. Entre regiões diferentes é uma transferência internacional, com câmbio.</p>`;
+    $$("[data-own]", root).forEach((b) => b.addEventListener("click", () => {
+      state.to = b.dataset.own;
+      $$("[data-own]", root).forEach((x) => x.setAttribute("aria-checked", String(x === b)));
+      drawSummary(); markSteps();
+    }));
+  }
+  function drawLimitHint() {
+    const eur = money(limits?.max_transfer_eur || MAX_PER_TRANSFER_EUR, "EUR");
+    $in("limit-hint").textContent = state.from.currency === "EUR" ? `Máximo ${eur} por transferência.`
+      : `Máximo ≈ ${money(maxIn(state.from.currency), state.from.currency)} por transferência (${eur} ao câmbio do dia).`;
+  }
   function amountValue() { return Number(($in("amount").value || "").replace(/\s/g, "").replace(",", ".")); }
 
   function estimate() {
     const dest = toIban();
     const region = regionOf(dest);
-    const destCur = region ? REGIONS[region].currency : null;
+    const own = ownAccount(dest);
+    const destCur = own ? own.currency : region ? REGIONS[region].currency : null;
     const amount = amountValue();
     const kind = region ? (region === regionOf(state.from.iban) ? "LOCAL" : "DISTRIBUIDA") : null;
     const rate = destCur ? (destCur === state.from.currency ? 1 : rates[state.from.currency]?.[destCur]) : null;
@@ -134,7 +169,9 @@ export async function render({ root, query, navigate }) {
     const fromR = REGIONS[regionOf(state.from.iban)];
     const toR = e.region ? REGIONS[e.region] : null;
     const name = toName();
-    const remaining = Number(state.from.daily_limit) - state.todayDebits;
+    const accountLeft = Number(state.from.daily_limit) - state.todayDebits;
+    const clientLeft = limits ? Number(limits.remaining_by_currency?.[state.from.currency] ?? (state.from.currency === "EUR" ? limits.remaining_eur : Infinity)) : Infinity;
+    const remaining = state.mode === "own" ? accountLeft : Math.min(accountLeft, clientLeft);
     $("#summary", root).innerHTML = `
       <h3>Resumo</h3>
       <div class="route" style="margin-top:14px">
@@ -150,9 +187,10 @@ export async function render({ root, query, navigate }) {
         <dt>O beneficiário recebe</dt><dd class="num">${e.receives != null ? `${e.rate !== 1 ? "≈ " : ""}${esc(money(e.receives, e.destCur))}` : "—"}</dd>
         <dt>Comissão</dt><dd class="num">${esc(money(0, state.from.currency))}</dd>
         <dt>Disponível hoje</dt><dd class="num">${esc(money(Math.max(remaining, 0), state.from.currency))}</dd>
+        ${limits && state.mode !== "own" ? `<dt>Limite diário (todas as contas)</dt><dd class="num">${esc(money(limits.remaining_eur, "EUR"))} de ${esc(money(limits.daily_limit_eur, "EUR"))}</dd>` : ""}
       </dl>
       <div class="banner banner-info" style="margin-top:16px">${icon(e.kind === "DISTRIBUIDA" ? "globe" : e.kind ? "bolt" : "info")}
-        <span>${e.kind === "DISTRIBUIDA"
+        <span>${state.mode === "own" && e.kind ? "Entre as suas contas: não conta para o limite diário. " : ""}${e.kind === "DISTRIBUIDA"
           ? `Débito em ${esc(fromR?.city || "")} e crédito em ${esc(toR?.city || "")} confirmados em conjunto: ou acontecem os dois, ou nenhum. O câmbio é fixado no momento da execução; a moeda final depende da conta de destino.`
           : e.kind ? "Transferência imediata entre contas da mesma região."
           : "Indique o destinatário: as contas GS-EU estão em Lisboa, as GS-AM em Nova Iorque e as GS-AF em Maputo."}</span></div>`;
@@ -178,12 +216,15 @@ export async function render({ root, query, navigate }) {
     state.from = active.find((a) => a.iban === b.dataset.from);
     $$("[data-from]", root).forEach((x) => x.setAttribute("aria-checked", String(x === b)));
     $in("amount-cur").textContent = state.from.currency;
+    drawOwn(); drawLimitHint();
     loadTodayDebits();
   }));
   $$("[data-mode]", root).forEach((b) => b.addEventListener("click", () => {
     state.mode = b.dataset.mode;
     $$("[data-mode]", root).forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
     $in("to-saved").hidden = state.mode !== "saved";
+    $in("to-own").hidden = state.mode !== "own";
+    if (state.mode === "own") drawOwn(); else if (ownAccount(state.to)) state.to = "";
     $in("to-new").hidden = state.mode !== "new";
     drawSummary(); markSteps();
   }));
@@ -201,6 +242,7 @@ export async function render({ root, query, navigate }) {
     drawSummary();
   });
 
+  drawOwn(); drawLimitHint();
   drawSummary(); markSteps(); loadTodayDebits();
 
   $in("tf").addEventListener("submit", (ev) => {
@@ -211,11 +253,12 @@ export async function render({ root, query, navigate }) {
     const err = $in("form-error"); err.innerHTML = "";
     if (state.mode === "new") {
       fieldError($in("to-iban"), validIban(e.dest) ? null : "IBAN inválido"); ok &&= validIban(e.dest);
-    } else if (!validIban(e.dest)) { err.innerHTML = `<p class="error-text">${icon("alert")}Escolha um beneficiário.</p>`; ok = false; }
+    } else if (!validIban(e.dest)) { err.innerHTML = `<p class="error-text">${icon("alert")}${state.mode === "own" ? "Escolha a conta de destino." : "Escolha um beneficiário."}</p>`; ok = false; }
     if (e.dest === state.from.iban) { err.innerHTML = `<p class="error-text">${icon("alert")}A conta de destino tem de ser diferente da de origem.</p>`; ok = false; }
-    const amountOk = e.amount > 0 && e.amount <= MAX_PER_TRANSFER && Math.round(e.amount * 100) === e.amount * 100;
+    const max = maxIn(state.from.currency);
+    const amountOk = e.amount > 0 && e.amount <= max && Math.round(e.amount * 100) === e.amount * 100;
     fieldError($in("amount"), amountOk ? (e.amount > Number(state.from.balance) ? "Saldo insuficiente" : null)
-      : e.amount > MAX_PER_TRANSFER ? `Máximo ${money(MAX_PER_TRANSFER, state.from.currency)} por transferência` : "Indique um montante válido (até 2 casas decimais)");
+      : e.amount > max ? `Máximo ${money(max, state.from.currency)} por transferência` : "Indique um montante válido (até 2 casas decimais)");
     ok &&= amountOk && e.amount <= Number(state.from.balance);
     if (!ok) return;
     review({ ...e, name, description: $in("desc").value.trim(), save: state.mode === "new" && $in("save-ben").checked });

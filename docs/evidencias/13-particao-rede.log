@@ -1,43 +1,43 @@
 
 ══════ Cenário 13 — Partição de rede durante o 2PC ══════
-(2026-11-20T10:00:13Z)
+(2026-11-20T13:25:29Z)
   POST /auth/login -> HTTP 200
 
 ▶ A1. Partição DEPOIS do PREPARE: pausa de 15 s antes da decisão
-  POST /admin/chaos -> HTTP 200 (X-Served-By: api-2)
+  POST /admin/chaos -> HTTP 200 (X-Served-By: api-1)
   chaos no coordenador: {"pause_before_prepare":0,"pause_after_prepare":15,"crash_after_prepare":false,"crash_after_decision":false,"fail_participant":null}
-  pg-europa: 1_YjRhYTFmY2QtNjI3Mi01OWIwLTk4MzYtYjEyZTVmOGRkMzky_RVU=  (preparada às 10:00:14)
-  pg-america: 1_YjRhYTFmY2QtNjI3Mi01OWIwLTk4MzYtYjEyZTVmOGRkMzky_QU0=  (preparada às 10:00:14)
+  pg-europa: 1_NTU3ZGIwMjgtZThhMy01ZjZiLTk4NWEtZDZjZmEyMTc3MWQy_RVU=  (preparada às 13:25:30)
+  pg-america: 1_NTU3ZGIwMjgtZThhMy01ZjZiLTk4NWEtZDZjZmEyMTc3MWQy_QU0=  (preparada às 13:25:30)
   pg-africa: nenhuma
   $ docker network disconnect gss_globalnet pg-america
   ✔ pg-america isolado da rede (o processo continua vivo)
   resposta: HTTP 202  state=DECISAO_COMMIT
-    10:00:14.379  INICIADA   {"kind":"DISTRIBUIDA","amount":"30.00","signer":"api-1","fx_rate":"1.08000000","converted":"32.40","approved_by":null,"to_currency":"USD","initiated_by":"11111111-0000-4000-8000-000000000003","from_currency":"EUR","initiated_role":"cliente"}
-    10:00:14.384  PREPARANDO
-    10:00:14.402  PREPARADO_EU   {"iban":"GS-EU-00000003","side":"DEBITO"}
-    10:00:14.420  PREPARADO_AM   {"iban":"GS-AM-00000001","side":"CREDITO"}
-    10:00:14.422  PAUSA_CHAOS   {"seconds":15}
-    10:00:29.432  DECISAO_COMMIT
-    10:00:29.437  COMMIT_EU
-    10:00:29.440  COMMIT_PENDENTE_AM   {"error":"OperationalError"}
+    13:25:30.658  INICIADA   {"kind":"DISTRIBUIDA","amount":"30.00","signer":"api-2","fx_rate":"1.08000000","converted":"32.40","approved_by":null,"to_currency":"USD","initiated_by":"11111111-0000-4000-8000-000000000003","from_currency":"EUR","initiated_role":"cliente"}
+    13:25:30.665  PREPARANDO
+    13:25:30.693  PREPARADO_EU   {"iban":"GS-EU-00000003","side":"DEBITO"}
+    13:25:30.720  PREPARADO_AM   {"iban":"GS-AM-00000001","side":"CREDITO"}
+    13:25:30.723  PAUSA_CHAOS   {"seconds":15}
+    13:25:45.763  DECISAO_COMMIT
+    13:25:45.770  COMMIT_EU
+    13:25:45.775  COMMIT_PENDENTE_AM   {"error":"OperationalError"}
   ✔ decisão gravada; COMMIT na América pendente
   durante a partição a América continua a ter a transação preparada:
-    1_YjRhYTFmY2QtNjI3Mi01OWIwLTk4MzYtYjEyZTVmOGRkMzky_QU0=
+    1_NTU3ZGIwMjgtZThhMy01ZjZiLTk4NWEtZDZjZmEyMTc3MWQy_QU0=
 
 ▶ A2. Repor a rede → o recovery loop conclui
   $ docker network connect --ip 172.28.0.63 --alias pg-america.global.local gss_globalnet pg-america
   ✔ rede reposta
-    10:00:14.379  INICIADA   {"kind":"DISTRIBUIDA","amount":"30.00","signer":"api-1","fx_rate":"1.08000000","converted":"32.40","approved_by":null,"to_currency":"USD","initiated_by":"11111111-0000-4000-8000-000000000003","from_currency":"EUR","initiated_role":"cliente"}
-    10:00:14.384  PREPARANDO
-    10:00:14.402  PREPARADO_EU   {"iban":"GS-EU-00000003","side":"DEBITO"}
-    10:00:14.420  PREPARADO_AM   {"iban":"GS-AM-00000001","side":"CREDITO"}
-    10:00:14.422  PAUSA_CHAOS   {"seconds":15}
-    10:00:29.432  DECISAO_COMMIT
-    10:00:29.437  COMMIT_EU
-    10:00:29.440  COMMIT_PENDENTE_AM   {"error":"OperationalError"}
-    10:00:33.151  RECUPERACAO_COMMIT_AM
-    10:00:33.157  CONFIRMADA   {"recovered":true}
-  GS-EU-00000003: 2518.10 → 2488.10 EUR    GS-AM-00000001: 17958.56 → 17990.96 USD
+    13:25:30.658  INICIADA   {"kind":"DISTRIBUIDA","amount":"30.00","signer":"api-2","fx_rate":"1.08000000","converted":"32.40","approved_by":null,"to_currency":"USD","initiated_by":"11111111-0000-4000-8000-000000000003","from_currency":"EUR","initiated_role":"cliente"}
+    13:25:30.665  PREPARANDO
+    13:25:30.693  PREPARADO_EU   {"iban":"GS-EU-00000003","side":"DEBITO"}
+    13:25:30.720  PREPARADO_AM   {"iban":"GS-AM-00000001","side":"CREDITO"}
+    13:25:30.723  PAUSA_CHAOS   {"seconds":15}
+    13:25:45.763  DECISAO_COMMIT
+    13:25:45.770  COMMIT_EU
+    13:25:45.775  COMMIT_PENDENTE_AM   {"error":"OperationalError"}
+    13:25:46.893  RECUPERACAO_COMMIT_AM
+    13:25:46.902  CONFIRMADA   {"recovered":true}
+  GS-EU-00000003: 2554.93 → 2524.93 EUR    GS-AM-00000001: 10201.77 → 10234.17 USD
   ✔ −30.00 EUR / +32.40 USD: o dinheiro saiu e entrou
 
 ▶ B1. Partição ANTES do PREPARE da América: pausa de 8 s antes da fase 1
@@ -49,15 +49,15 @@
   ✔ pg-america isolado da rede (o processo continua vivo)
   resposta: HTTP 422  state=ABORTADA
   motivo: AM: shard indisponível (OperationalError)
-    10:00:34.633  INICIADA   {"kind":"DISTRIBUIDA","amount":"40.00","signer":"api-2","fx_rate":"1.08000000","converted":"43.20","approved_by":null,"to_currency":"USD","initiated_by":"11111111-0000-4000-8000-000000000003","from_currency":"EUR","initiated_role":"cliente"}
-    10:00:34.638  PREPARANDO
-    10:00:34.642  PAUSA_CHAOS_ANTES_PREPARE   {"seconds":8}
-    10:00:42.663  PREPARADO_EU   {"iban":"GS-EU-00000003","side":"DEBITO"}
-    10:00:42.680  VOTO_NAO_AM   {"reason":"AM: shard indisponível (OperationalError)"}
-    10:00:42.686  ROLLBACK_EU
-    10:00:42.691  ABORTADA   {"reason":"AM: shard indisponível (OperationalError)"}
+    13:25:48.796  INICIADA   {"kind":"DISTRIBUIDA","amount":"40.00","signer":"api-2","fx_rate":"1.08000000","converted":"43.20","approved_by":null,"to_currency":"USD","initiated_by":"11111111-0000-4000-8000-000000000003","from_currency":"EUR","initiated_role":"cliente"}
+    13:25:48.804  PREPARANDO
+    13:25:48.807  PAUSA_CHAOS_ANTES_PREPARE   {"seconds":8}
+    13:25:56.862  PREPARADO_EU   {"iban":"GS-EU-00000003","side":"DEBITO"}
+    13:25:56.919  VOTO_NAO_AM   {"reason":"AM: shard indisponível (OperationalError)"}
+    13:25:56.957  ROLLBACK_EU
+    13:25:56.964  ABORTADA   {"reason":"AM: shard indisponível (OperationalError)"}
   ✔ a América não votou → ABORTADA; a Europa fez ROLLBACK
-  ✔ saldo de GS-EU-00000003 inalterado (2488.10 EUR): o dinheiro não saiu
+  ✔ saldo de GS-EU-00000003 inalterado (2524.93 EUR): o dinheiro não saiu
   $ docker network connect --ip 172.28.0.63 --alias pg-america.global.local gss_globalnet pg-america
   ✔ rede reposta
 
@@ -68,8 +68,8 @@
   pg-america: nenhuma
   pg-africa: nenhuma
   GET /admin/consistency -> HTTP 200 (X-Served-By: api-1)
-    {"ok":true,"checked_transactions":649,"confirmed":591,"aborted":58,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[],"AF":[]},"problems":[]}
+    {"ok":true,"checked_transactions":82,"confirmed":75,"aborted":7,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[],"AF":[]},"problems":[]}
   ✔ /admin/consistency OK: sem dinheiro perdido nem duplicado
 
 ══════ Cenário 13 concluído ══════
-(2026-11-20T10:00:46Z)
+(2026-11-20T13:26:01Z)

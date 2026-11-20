@@ -1,6 +1,6 @@
 
 ══════ Cenário 12 — TLS obrigatório em todos os canais ══════
-(2026-11-20T10:00:09Z)
+(2026-11-20T13:25:21Z)
 
 ▶ 1. PostgreSQL sem TLS (sslmode=disable) → recusado pelo pg_hba.conf
   ✔ pg-core: ligação sem TLS rejeitada ("no encryption")
@@ -30,9 +30,8 @@
      api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
      api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
      api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
-     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
      replicator | pg-europa-replica | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
-    (19 rows)
+    (18 rows)
     
   ✔ 0 ligações de rede sem TLS
 
@@ -57,4 +56,4 @@
   ✔ TLS 1.1 recusado (mínimo TLS 1.2)
 
 ══════ Cenário 12 concluído ══════
-(2026-11-20T10:00:13Z)
+(2026-11-20T13:25:29Z)

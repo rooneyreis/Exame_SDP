@@ -63,8 +63,8 @@ def test_requests_without_token_are_rejected(http):
 # ---------- region routing ----------
 
 def test_client_sees_only_accounts_of_its_region_shard(http, ana, david):
-    assert [a["iban"] for a in http.get("/accounts", headers=ana).json()] == ["GS-EU-00000001"]
-    assert [a["iban"] for a in http.get("/accounts", headers=david).json()] == ["GS-AM-00000001"]
+    assert [a["iban"] for a in http.get("/accounts", headers=ana).json() if a["status"] != "ENCERRADA"] == ["GS-EU-00000001"]
+    assert [a["iban"] for a in http.get("/accounts", headers=david).json() if a["status"] != "ENCERRADA"] == ["GS-AM-00000001"]
 
 
 def test_me_returns_claims_and_accounts(http, ana):

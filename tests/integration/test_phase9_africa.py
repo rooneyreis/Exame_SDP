@@ -76,7 +76,8 @@ def test_africa_client_sees_mzn_account_from_africa_shard(http, users):
     me = http.get("/me", headers=users["amina"]).json()
     assert me["region"] == "AF"
     accounts = http.get("/accounts", headers=users["amina"]).json()
-    assert [(a["iban"], a["currency"]) for a in accounts] == [("GS-AF-00000001", "MZN")]
+    # the seeded AF account (closed accounts opened elsewhere during demos are ignored)
+    assert [(a["iban"], a["currency"]) for a in accounts if a["status"] != "ENCERRADA"] == [("GS-AF-00000001", "MZN")]
     # The row physically lives in pg-africa and nowhere else.
     assert psql(shard_conninfo("AF"), "SELECT count(*) FROM accounts WHERE iban = 'GS-AF-00000001'").stdout.strip() == "1"
     assert psql(shard_conninfo("EU"), "SELECT count(*) FROM accounts WHERE iban LIKE 'GS-AF-%'").stdout.strip() == "0"

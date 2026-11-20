@@ -385,6 +385,17 @@ Regras (verificadas no backend):
 - **Transferências entre contas próprias:** entre regiões são 2PC com câmbio, como qualquer outra.
 - **Auditoria:** `CONTA_PEDIDO_ABERTURA`, `CONTA_ABERTURA_APROVADA`, `CONTA_ABERTA_BALCAO`, `CONTA_PEDIDO_REJEITADO`, `CONTA_PEDIDO_ENCERRAMENTO` e `CONTA_ENCERRADA` no registo encadeado por SHA-256.
 
+Na interface:
+- **Cliente:**
+  - Em **Contas**, "Abrir nova conta" (região + moeda; as combinações que já tem ficam desativadas), o estado dos pedidos com o motivo de uma rejeição, as contas de todas as regiões com o património total convertido e o pedido de encerramento no detalhe da conta.
+  - Em **Transferir**, a opção "Entre as minhas contas".
+  - No **Resumo**, o limite diário.
+- **Operador:**
+  - Em **Pedidos de contas** (`#/ops/account-requests`), aprova ou rejeita com motivo e abre contas ao balcão.
+  - O **Balcão** mostra quantos pedidos estão pendentes.
+  - O administrador e o auditor consultam a mesma página só em leitura.
+- **Administrador:** em **Limites**, o máximo de contas por cliente e o limite diário por cliente.
+
 Esquema: `infra/postgres/migrations/coordinator/003_contas_multiplas.sql` (tabela `account_requests`, colunas `amount_eur` e `own_transfer`, novas definições) e `infra/postgres/migrations/bank/001_conta_encerrada.sql`, aplicada a cada shard pelo `migrate.sh`. Seed: o **Bruno Costa** tem contas na Europa (EUR), na América (USD) e em África (MZN). Testes em `tests/integration/test_phase10_multi_accounts.py` e no cenário `15-contas-multiplas.sh`.
 
 ## Cenários de demonstração

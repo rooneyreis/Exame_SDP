@@ -34,6 +34,7 @@ import * as opsHomeView from "./views/ops-home.js";
 import * as opsTransferView from "./views/ops-transfer.js";
 import * as reportsView from "./views/reports.js";
 import * as notificationsView from "./views/notifications.js";
+import * as accountRequestsView from "./views/account-requests.js";
 
 const CLIENT = ["cliente"];
 const STAFF = ["operador", "auditor", "admin"];
@@ -60,6 +61,7 @@ const ROUTES = [
   { path: "/ops/kyc", view: opsView, roles: ["operador", "admin"], title: "Abertura de contas" },
   { path: "/ops/accounts", view: opsView, roles: ["operador", "auditor"], title: "Contas e caixa" },
   { path: "/ops/beneficiaries", view: beneficiariesAdminView, roles: ["operador"], title: "Beneficiários de clientes" },
+  { path: "/ops/account-requests", view: accountRequestsView, roles: ["operador", "admin", "auditor"], title: "Pedidos de contas" },
   // Auditor
   { path: "/audit", view: auditHomeView, roles: ["auditor"], title: "Painel de auditoria" },
   { path: "/audit/events", view: auditEventsView, roles: ["auditor", "admin"], title: "Registos de auditoria" },
@@ -103,6 +105,7 @@ export const NAV = {
       { to: "/ops/beneficiaries", icon: "users", label: "Beneficiários" },
       { to: "/ops/accounts", icon: "wallet", label: "Contas e caixa" },
       { to: "/ops/kyc", icon: "check", label: "Abertura de contas" },
+      { to: "/ops/account-requests", icon: "bank", label: "Pedidos de contas" },
     ] },
     { group: "Conta", items: [
       { to: "/notifications", icon: "bell", label: "Notificações" },
@@ -121,6 +124,7 @@ export const NAV = {
     ] },
     { group: "Consulta", items: [
       { to: "/admin/accounts", icon: "wallet", label: "Contas" },
+      { to: "/ops/account-requests", icon: "bank", label: "Pedidos de contas" },
       { to: "/audit/beneficiaries", icon: "users", label: "Beneficiários" },
       { to: "/admin/settings", icon: "info", label: "Limites" },
     ] },
@@ -142,6 +146,7 @@ export const NAV = {
       { to: "/admin/beneficiaries", icon: "star", label: "Beneficiários" },
       { to: "/admin/settings", icon: "sliders", label: "Limites" },
       { to: "/ops/kyc", icon: "key", label: "Abertura de contas" },
+      { to: "/ops/account-requests", icon: "bank", label: "Pedidos de contas" },
     ] },
     { group: "Supervisão", items: [
       { to: "/audit/events", icon: "doc", label: "Registos" },

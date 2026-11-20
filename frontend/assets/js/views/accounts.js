@@ -2,10 +2,10 @@
 // indicadores, dados da conta, gráfico, extrato paginado com filtros).
 import { api } from "../api.js";
 import { areaChart } from "../chart.js";
-import { balanceSeries, convert, fxRates, movements, myAccounts } from "../data.js";
-import { date, dateTime, iban, money, originLabel, REGIONS, regionName } from "../format.js";
+import { balanceSeries, convert, fxRates, movements } from "../data.js";
+import { CURRENCY_NAMES, date, dateTime, iban, money, originLabel, REGION_CODES, REGIONS, regionName } from "../format.js";
 import { icon } from "../icons.js";
-import { $, $$, bindCopy, bindPager, busy, esc, fieldError, pagerHtml, paginate, sheet, toast } from "../ui.js";
+import { $, $$, bindCopy, bindPager, busy, confirmSheet, drawer, esc, fieldError, pagerHtml, paginate, sheet, toast } from "../ui.js";
 import { masked, pageHead } from "./common.js";
 
 const PAGE = 25;
@@ -15,41 +15,125 @@ export async function render({ root, params, claims, navigate }) {
   return detail(root, params.iban, claims, navigate);
 }
 
+const STATUS_LABEL = { ATIVA: "Ativa", BLOQUEADA: "Bloqueada", ENCERRADA: "Encerrada" };
+const STATUS_CLASS = { ATIVA: "status-done", BLOQUEADA: "status-failed", ENCERRADA: "" };
+const REQ_STATUS = { PENDENTE: ["status-pending", "clock", "Aguarda o operador"], APROVADO: ["status-done", "check", "Aprovado"], REJEITADO: ["status-failed", "x", "Rejeitado"] };
+const CURRENCIES = ["EUR", "USD", "MZN"];
+
 async function list(root, claims) {
-  const [accounts, rates] = await Promise.all([myAccounts(), fxRates()]);
-  const home = claims.region === "AM" ? "USD" : "EUR";
-  const total = accounts.reduce((s, a) => s + (convert(a.balance, a.currency, home, rates) ?? 0), 0);
-  const recent = await Promise.all(accounts.map((a) => movements(a.iban, 100).catch(() => [])));
+  const [me, rates, limits, requests] = await Promise.all([
+    api("/me"), fxRates(), api("/me/limits").catch(() => null), api("/account-requests").catch(() => []),
+  ]);
+  const accounts = me.accounts;
+  const open = accounts.filter((a) => a.status !== "ENCERRADA");
+  const home = REGIONS[claims.region]?.currency || "EUR";
+  const total = open.reduce((s, a) => s + (convert(a.balance, a.currency, home, rates) ?? 0), 0);
+  const pending = requests.filter((r) => r.status === "PENDENTE");
+  const max = limits?.max_accounts ?? 5;
+  const slots = max - open.length - pending.filter((r) => r.kind === "ABERTURA").length;
+  const closing = new Set(pending.filter((r) => r.kind === "ENCERRAMENTO").map((r) => r.iban));
+
   root.innerHTML = `
-    ${pageHead("Contas", "As suas contas à ordem e respetivos dados bancários.", `<a class="btn btn-primary" href="#/transfer">${icon("transfer")} Transferir</a>`)}
+    ${pageHead("Contas", "As suas contas em todas as regiões e moedas.",
+      `<a class="btn btn-secondary" href="#/transfer">${icon("transfer")} Transferir</a>
+       <button class="btn btn-primary" id="new-account" ${slots > 0 ? "" : "disabled title=\"Atingiu o máximo de contas\""}>${icon("plus")} Abrir nova conta</button>`)}
+    ${me.unavailable_regions?.length ? `<div class="banner banner-warn" style="margin-bottom:var(--gap)">${icon("alert")}<span>A região ${me.unavailable_regions.map((r) => esc(regionName(r))).join(", ")} está temporariamente indisponível: as contas dessa região não aparecem até o serviço voltar. As restantes funcionam normalmente.</span></div>` : ""}
     <section class="panel"><div class="metric-strip" style="--n:4">
-      <div class="metric"><span class="m-label">${icon("wallet")} Saldo total estimado</span><span class="m-value">${esc(masked(money(total, home)))}</span><span class="m-sub">em ${esc(home)} ao câmbio do dia</span></div>
-      <div class="metric"><span class="m-label">${icon("bank")} Contas</span><span class="m-value">${accounts.length}</span><span class="m-sub">${accounts.filter((a) => a.status === "ATIVA").length} ativa(s)</span></div>
-      <div class="metric"><span class="m-label">${icon("globe")} Centro de dados</span><span class="m-value" style="font-size:1.3rem">${esc(REGIONS[claims.region]?.city || "—")}</span><span class="m-sub">${esc(REGIONS[claims.region]?.name || "")} · os seus dados ficam na sua região</span></div>
-      <div class="metric"><span class="m-label">${icon("history")} Movimentos registados</span><span class="m-value">${recent.reduce((s, r) => s + r.length, 0)}</span><span class="m-sub">nas suas contas</span></div>
+      <div class="metric"><span class="m-label">${icon("wallet")} Património total</span><span class="m-value">${esc(masked(money(total, home)))}</span><span class="m-sub">convertido para ${esc(home)} ao câmbio do dia</span></div>
+      <div class="metric"><span class="m-label">${icon("bank")} Contas ativas</span><span class="m-value">${open.length}<span class="soft" style="font-size:1rem"> / ${max}</span></span><span class="m-sub">${slots > 0 ? `pode abrir mais ${slots}` : "máximo atingido"}</span></div>
+      <div class="metric"><span class="m-label">${icon("globe")} Regiões</span><span class="m-value" style="font-size:1.3rem">${[...new Set(open.map((a) => a.region))].map((r) => esc(REGIONS[r]?.city || r)).join(" · ") || "—"}</span><span class="m-sub">cada conta fica no centro de dados da sua região</span></div>
+      <div class="metric"><span class="m-label">${icon("clock")} Pedidos pendentes</span><span class="m-value">${pending.length}</span><span class="m-sub">aguardam um operador</span></div>
     </div></section>
     <div class="bento mt">
-      <div class="c-8"><div class="tile-grid">${accounts.map((a, i) => `
-        <a class="tile" href="#/accounts/${encodeURIComponent(a.iban)}">
-          <div class="tile-top"><span class="cur-badge">${esc(a.currency)}</span><span class="grow"><span class="name">Conta à ordem</span><span class="meta" style="display:block">${regionName(a.region)}</span></span>
-            <span class="chip ${a.status === "ATIVA" ? "status-done" : "status-failed"}">${a.status === "ATIVA" ? "Ativa" : "Bloqueada"}</span></div>
+      <div class="c-8"><div class="tile-grid">${accounts.map((a) => {
+        const conv = a.currency !== home ? convert(a.balance, a.currency, home, rates) : null;
+        return `
+        <a class="tile ${a.status === "ENCERRADA" ? "closed" : ""}" href="#/accounts/${encodeURIComponent(a.iban)}" ${a.status === "ENCERRADA" ? 'style="opacity:.62"' : ""}>
+          <div class="tile-top"><span class="region-tag">${esc(a.region)}</span><span class="grow"><span class="name">${esc(regionName(a.region))} · ${esc(REGIONS[a.region]?.city || "")}</span><span class="meta" style="display:block">Conta à ordem em ${esc(CURRENCY_NAMES[a.currency] || a.currency)}</span></span>
+            <span class="chip ${STATUS_CLASS[a.status] ?? ""}">${esc(STATUS_LABEL[a.status] || a.status)}</span></div>
           <div><div class="metric" style="padding:0"><span class="m-value">${esc(masked(money(a.balance, a.currency)))}</span></div>
+            <div class="meta num" style="margin-top:2px">${conv != null ? `≈ ${esc(masked(money(conv, home)))}` : "&nbsp;"}</div>
             <div class="mono meta" style="margin-top:6px">${esc(iban(a.iban))}</div></div>
-          <div class="meta">${recent[i].length} movimento(s) · limite diário ${esc(money(a.daily_limit, a.currency))}</div>
-        </a>`).join("")}</div></div>
+          <div class="meta">${closing.has(a.iban) ? `${icon("clock")} Encerramento pedido` : a.status === "ENCERRADA" ? `Encerrada em ${esc(date(a.closed_at))}` : `Limite da conta ${esc(money(a.daily_limit, a.currency))}/dia`}</div>
+        </a>`; }).join("")}
+        ${slots > 0 ? `<button class="tile add" id="new-account-tile">${icon("plus")}<span>Abrir nova conta</span><span class="meta">Europa, América ou África · EUR, USD ou MZN</span></button>` : ""}</div></div>
       <aside class="c-4 stack-gap">
+        <section class="panel"><div class="panel-head"><div><h3>Pedidos de contas</h3><div class="sub">abertura e encerramento</div></div></div>
+          <div>${requests.slice(0, 6).map((r) => {
+            const [cls, ic, label] = REQ_STATUS[r.status] || ["", "clock", r.status];
+            return `<div class="queue-item">
+              <span class="tx-icon">${icon(r.kind === "ABERTURA" ? "plus" : "x")}</span>
+              <span class="q-main"><b>${r.kind === "ABERTURA" ? "Abertura" : "Encerramento"} · ${esc(r.region)} · ${esc(r.currency)}</b>
+                <span>${r.iban ? `${esc(iban(r.iban))} · ` : ""}${esc(dateTime(r.created_at))}${r.status === "REJEITADO" && r.decision_reason ? ` · motivo: ${esc(r.decision_reason)}` : ""}</span></span>
+              <span class="chip ${cls}">${icon(ic)}${esc(label)}</span></div>`; }).join("") ||
+            `<div class="empty-sm">Ainda não fez pedidos. Use "Abrir nova conta" para ter uma conta noutra região ou moeda.</div>`}</div>
+        </section>
         <section class="panel"><div class="panel-head"><div><h3>Dados para receber</h3><div class="sub">partilhe o IBAN para receber transferências</div></div></div>
-          <div class="rows">${accounts.map((a) => `<div class="r-item" style="cursor:default"><span class="cur-badge">${esc(a.currency)}</span>
-            <span style="min-width:0"><span class="r-title mono">${esc(iban(a.iban))}</span><span class="r-sub">${regionName(a.region)} · ${REGIONS[a.region]?.city || ""}</span></span>
+          <div class="rows">${open.map((a) => `<div class="r-item" style="cursor:default"><span class="cur-badge">${esc(a.currency)}</span>
+            <span style="min-width:0"><span class="r-title mono">${esc(iban(a.iban))}</span><span class="r-sub">${esc(regionName(a.region))} · ${esc(REGIONS[a.region]?.city || "")}</span></span>
             <button class="btn btn-ghost btn-icon" data-copy="${esc(a.iban)}" data-copy-label="IBAN copiado" aria-label="Copiar IBAN">${icon("copy")}</button></div>`).join("")}</div>
         </section>
-        <section class="panel"><div class="panel-body" style="padding-top:20px"><div class="row" style="align-items:flex-start;gap:14px">
-          <span class="tx-icon">${icon("info")}</span>
-          <div><h3>Precisa de outra moeda?</h3><p class="soft" style="margin-top:4px;font-size:.88rem">As contas em EUR, USD e MZN são abertas por um operador após verificação. Contacte o seu gestor de conta.</p></div>
-        </div></div></section>
       </aside>
     </div>`;
   bindCopy(root);
+  const openSheet = () => openAccountSheet({ open, pending, slots, onDone: () => list(root, claims) });
+  $("#new-account", root)?.addEventListener("click", openSheet);
+  $("#new-account-tile", root)?.addEventListener("click", openSheet);
+}
+
+/** Pedido de conta adicional: escolher região e moeda (combinações já existentes desativadas). */
+function openAccountSheet({ open, pending, slots, onDone }) {
+  const taken = new Set([...open.map((a) => `${a.region}:${a.currency}`),
+    ...pending.filter((r) => r.kind === "ABERTURA").map((r) => `${r.region}:${r.currency}`)]);
+  const sel = { region: null, currency: null };
+  const s = drawer({
+    title: "Abrir nova conta",
+    subtitle: `Pode ter mais ${slots} conta(s). O pedido é aprovado por um operador.`,
+    body: `
+      <div class="field"><span class="label">Região (onde ficam os dados)</span>
+        <div class="region-choices" role="radiogroup" aria-label="Região">${REGION_CODES.map((r) => `
+          <button type="button" class="choice region-choice" role="radio" aria-checked="false" data-r="${r}">
+            <span class="region-tag">${r}</span><span class="grow"><b>${esc(REGIONS[r].name)}</b><span>${esc(REGIONS[r].city)} · contas GS-${r}</span></span></button>`).join("")}</div></div>
+      <div class="field" style="margin-top:18px"><span class="label">Moeda da conta</span>
+        <div class="segmented" role="group" aria-label="Moeda" id="cur-group">${CURRENCIES.map((c) => `<button type="button" data-c="${c}" aria-pressed="false">${c}</button>`).join("")}</div>
+        <p class="hint" id="cur-hint">Escolha primeiro a região.</p></div>
+      <div class="banner banner-info" style="margin-top:18px">${icon("info")}<span>Depois de aprovada, a conta aparece aqui com o seu IBAN. Transferências entre as suas contas não contam para o limite diário.</span></div>
+      <div id="acc-err" style="margin-top:12px"></div>`,
+    footer: `<button class="btn btn-secondary" data-close>Cancelar</button><button class="btn btn-primary" id="acc-ok" disabled>${icon("check")} Pedir abertura</button>`,
+  });
+  const el = s.el;
+  function refresh() {
+    $$("[data-r]", el).forEach((b) => b.setAttribute("aria-checked", String(b.dataset.r === sel.region)));
+    $$("[data-c]", el).forEach((b) => {
+      const used = !sel.region || taken.has(`${sel.region}:${b.dataset.c}`);
+      b.disabled = used;
+      if (used && sel.currency === b.dataset.c) sel.currency = null;
+      b.setAttribute("aria-pressed", String(b.dataset.c === sel.currency));
+    });
+    $("#cur-hint", el).textContent = !sel.region ? "Escolha primeiro a região."
+      : CURRENCIES.every((c) => taken.has(`${sel.region}:${c}`)) ? "Já tem (ou pediu) contas em todas as moedas desta região."
+      : `A moeda base em ${REGIONS[sel.region].city} é ${REGIONS[sel.region].currency}; pode escolher outra. As já existentes estão desativadas.`;
+    $("#acc-ok", el).disabled = !(sel.region && sel.currency);
+  }
+  $$("[data-r]", el).forEach((b) => b.addEventListener("click", () => {
+    sel.region = b.dataset.r;
+    if (!sel.currency && !taken.has(`${sel.region}:${REGIONS[sel.region].currency}`)) sel.currency = REGIONS[sel.region].currency;
+    refresh();
+  }));
+  $$("[data-c]", el).forEach((b) => b.addEventListener("click", () => { sel.currency = b.dataset.c; refresh(); }));
+  $("#acc-ok", el).addEventListener("click", async (e) => {
+    busy(e.currentTarget, true, "A enviar…");
+    try {
+      await api("/account-requests", { method: "POST", body: { region: sel.region, currency: sel.currency } });
+      s.close();
+      toast(`Pedido de conta ${sel.currency} em ${REGIONS[sel.region].city} enviado`);
+      onDone();
+    } catch (ex) {
+      busy(e.currentTarget, false);
+      $("#acc-err", el).innerHTML = `<div class="banner banner-bad">${icon("alert")}<span>${esc(ex.message)}</span></div>`;
+    }
+  });
+  refresh();
 }
 
 export function cashSheet(account, kind, onDone) {
@@ -96,13 +180,14 @@ async function detail(root, accountIban, claims, navigate) {
     <div class="bento">
       <section class="hero c-8">
         <div>
-          <div class="h-label">${icon("wallet")} Conta à ordem · ${esc(acc.currency)} · ${acc.status === "ATIVA" ? "Ativa" : "Bloqueada"}</div>
+          <div class="h-label">${icon("wallet")} Conta à ordem · ${esc(acc.currency)} · ${esc(STATUS_LABEL[acc.status] || acc.status)}</div>
           <div class="h-value">${esc(masked(money(acc.balance, acc.currency)))}</div>
           <div class="h-meta mono">${esc(iban(acc.iban))}</div>
         </div>
         <div class="h-actions">
           ${staff ? (claims.role === "operador" ? `<button class="btn btn-white" id="dep">${icon("deposit")} Depósito</button><button class="btn btn-light" id="wd">${icon("withdraw")} Levantamento</button>` : "")
-            : `<a class="btn btn-white" href="#/transfer?from=${encodeURIComponent(acc.iban)}">${icon("arrowUp")} Transferir</a>`}
+            : acc.status === "ATIVA" ? `<a class="btn btn-white" href="#/transfer?from=${encodeURIComponent(acc.iban)}">${icon("arrowUp")} Transferir</a>` : ""}
+          ${!staff && acc.status !== "ENCERRADA" ? `<button class="btn btn-light" id="close-acc">${icon("x")} Pedir encerramento</button>` : ""}
           <button class="btn btn-light" data-copy="${esc(acc.iban)}" data-copy-label="IBAN copiado">${icon("copy")} Copiar IBAN</button>
         </div>
         <div class="h-stats">
@@ -120,6 +205,7 @@ async function detail(root, accountIban, claims, navigate) {
           <dt>Região</dt><dd>${esc(region?.name)} · ${esc(region?.city)}</dd>
           <dt>Nó de dados</dt><dd class="mono">${REGIONS[acc.region]?.node || "—"}</dd>
           <dt>Aberta em</dt><dd>${esc(date(acc.created_at))}</dd>
+          ${acc.closed_at ? `<dt>Encerrada em</dt><dd>${esc(date(acc.closed_at))}</dd>` : ""}
           ${staff ? `<dt>Titular (id)</dt><dd class="mono">${esc(acc.user_id.slice(0, 8))}…</dd>` : ""}
         </dl></div>
       </section>
@@ -175,6 +261,7 @@ async function detail(root, accountIban, claims, navigate) {
   draw();
 
   const reload = () => detail(root, accountIban, claims, navigate);
+  $("#close-acc", root)?.addEventListener("click", () => closeAccount(acc, reload));
   $("#dep", root)?.addEventListener("click", () => cashSheet(acc, "deposit", reload));
   $("#wd", root)?.addEventListener("click", () => cashSheet(acc, "withdraw", reload));
   $("#csv", root).addEventListener("click", () => {
@@ -186,4 +273,27 @@ async function detail(root, accountIban, claims, navigate) {
     a.download = `extrato-${acc.iban}.csv`;
     a.click();
   });
+}
+
+
+/** Pedido de encerramento (cliente). Só com saldo 0: o operador confirma depois. */
+async function closeAccount(acc, onDone) {
+  if (Number(acc.balance) !== 0) {
+    const s = sheet({
+      title: "Encerrar conta",
+      body: `<p>Para encerrar a conta <span class="mono">${esc(iban(acc.iban))}</span>, o saldo tem de ser <b>0</b>.</p>
+        <p class="soft" style="margin-top:10px">Saldo atual: <b class="num">${esc(money(acc.balance, acc.currency))}</b>. Transfira-o primeiro para outra conta (pode ser uma das suas) e volte a pedir o encerramento.</p>`,
+      footer: `<button class="btn btn-secondary" data-close>Fechar</button><a class="btn btn-primary" href="#/transfer?from=${encodeURIComponent(acc.iban)}&own=1">${icon("transfer")} Transferir o saldo</a>`,
+    });
+    $("a.btn-primary", s.el).addEventListener("click", () => s.close());
+    return;
+  }
+  if (!await confirmSheet({ title: "Encerrar conta", message: `Pedir o encerramento da conta ${esc(iban(acc.iban))}? Um operador confirma o pedido; a conta fica registada como encerrada e deixa de receber e enviar dinheiro.`, confirm: "Pedir encerramento", danger: true })) return;
+  try {
+    await api(`/accounts/${encodeURIComponent(acc.iban)}/closure`, { method: "POST" });
+    toast("Pedido de encerramento enviado ao operador");
+    onDone();
+  } catch (ex) {
+    toast(ex.message, "bad");
+  }
 }
