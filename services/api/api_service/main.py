@@ -22,6 +22,7 @@ import psycopg_pool
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 
+from common import limits
 from common.audit import AuditLog, verify_chain
 from common.crypto import canonical_json, load_ed25519_private, signed_headers
 from common.db import REGIONS, SHARD_NODES, ShardRouter, is_valid_iban, make_pool, region_of_iban, shard_conninfo
@@ -128,7 +129,19 @@ def account_out(row: dict) -> dict:
         "iban": row["iban"], "user_id": str(row["user_id"]), "region": region_of_iban(row["iban"]),
         "currency": row["currency"], "balance": f"{row['balance']:.2f}", "status": row["status"],
         "daily_limit": f"{row['daily_limit']:.2f}", "created_at": row["created_at"],
+        "closed_at": row.get("closed_at"),
     }
+
+
+async def eur_value(amount: Decimal, currency: str) -> Decimal:
+    """Valor em EUR (os limites institucionais são em EUR)."""
+    if currency == "EUR":
+        return limits.to_eur(amount, Decimal(1))
+    async with core.connection() as conn:
+        row = await (await conn.execute(limits.EUR_RATE_SQL, (currency,))).fetchone()
+    if row is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"sem taxa de câmbio {currency} -> EUR")
+    return limits.to_eur(amount, row["rate"])
 
 
 def check_iban(iban: str) -> None:
@@ -179,25 +192,8 @@ async def health():
 
 # --- client endpoints --------------------------------------------------------------
 
-@app.get("/me")
-async def me(claims: dict = Depends(current_claims)):
-    accounts = []
-    if claims["role"] == "cliente":
-        async with read_connection(claims["region"]) as conn:
-            rows = await (await conn.execute(
-                "SELECT * FROM accounts WHERE user_id = %s ORDER BY iban", (claims["sub"],))).fetchall()
-        accounts = [account_out(r) for r in rows]
-    return {"user_id": claims["sub"], "role": claims["role"], "region": claims["region"],
-            "token_expires_at": claims["exp"], "accounts": accounts}
-
-
-@app.get("/accounts")
-async def my_accounts(claims: dict = Depends(require_permission("accounts:read:own"))):
-    # The user's region (JWT claim) says which shard holds their accounts.
-    async with read_connection(claims["region"]) as conn:
-        rows = await (await conn.execute(
-            "SELECT * FROM accounts WHERE user_id = %s ORDER BY iban", (claims["sub"],))).fetchall()
-    return [account_out(r) for r in rows]
+# GET /me, GET /accounts and the account requests live in accounts.py: a client may hold
+# accounts in several regions, so they read every shard.
 
 
 @app.get("/accounts/{iban}")
@@ -292,7 +288,8 @@ async def create_account(body: CreateAccountRequest, claims: dict = Depends(requ
             # Serialises concurrent calls for the same user (e.g. KYC retried twice).
             await conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (str(body.user_id),))
             existing = await (await conn.execute(
-                "SELECT * FROM accounts WHERE user_id = %s AND currency = %s", (body.user_id, body.currency))).fetchone()
+                "SELECT * FROM accounts WHERE user_id = %s AND currency = %s AND status <> 'ENCERRADA'",
+                (body.user_id, body.currency))).fetchone()
             if existing:
                 return {**account_out(existing), "created": False}
             row = await (await conn.execute(
@@ -323,13 +320,14 @@ async def create_transfer(body: TransferRequest,
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "IBAN inválido")
     if body.from_iban == body.to_iban:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "origem e destino iguais")
-    limits = await admin.current_settings()
-    if body.amount > limits["max_transfer_amount"]:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            f"montante acima do máximo por transferência ({limits['max_transfer_amount']:.2f})")
+    conf = await admin.current_settings()
     source = await load_account(body.from_iban)
     if str(source["user_id"]) != claims["sub"]:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conta de origem não encontrada")  # not yours
+    # The maximum per transfer is in EUR, converted to the source account currency
+    # (the coordinator checks it again, together with the daily limit per client).
+    if problem := limits.max_problem(await eur_value(body.amount, source["currency"]), conf["max_transfer_amount"]):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, problem)
     await load_account(body.to_iban)  # 404 if the destination does not exist
 
     tx_id = transfer_tx_id(claims["sub"], idempotency_key)
@@ -527,6 +525,7 @@ async def cluster_status(claims: dict = Depends(require_permission("system:statu
 
 
 # --- Administração, operações e auditoria (módulo admin.py) ----------------------------------
-from . import admin  # noqa: E402  (precisa das dependências definidas acima)
+from . import accounts, admin  # noqa: E402  (precisam das dependências definidas acima)
 
 app.include_router(admin.router)
+app.include_router(accounts.router)

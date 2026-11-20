@@ -56,5 +56,22 @@ class AccountUpdate(BaseModel):
 
 
 class SettingsUpdate(BaseModel):
+    # valores em EUR
     max_transfer_amount: Annotated[Decimal, Field(gt=0, le=Decimal("1000000.00"), decimal_places=2)] | None = None
     approval_threshold: Annotated[Decimal, Field(gt=0, le=Decimal("1000000.00"), decimal_places=2)] | None = None
+    daily_limit_eur: Annotated[Decimal, Field(gt=0, le=Decimal("10000000.00"), decimal_places=2)] | None = None
+    max_accounts_per_client: Annotated[int, Field(ge=1, le=20)] | None = None
+
+
+CURRENCIES = ("EUR", "USD", "MZN")
+
+
+class AccountRequestIn(BaseModel):
+    """Pedido de uma conta adicional: o cliente escolhe a região (shard) e a moeda."""
+    region: Literal[REGIONS]
+    currency: Literal[CURRENCIES]
+
+
+class DirectAccountIn(AccountRequestIn):
+    """Abertura direta ao balcão (operador)."""
+    user_id: uuid.UUID

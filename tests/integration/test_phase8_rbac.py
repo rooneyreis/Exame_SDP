@@ -157,7 +157,7 @@ def test_configurable_max_is_enforced(http, u):
     finally:
         http.put("/admin/settings", json={"max_transfer_amount": "10000.00", "approval_threshold": "5000.00"}, headers=u["admin"])
     limits = {s["key"]: s["value"] for s in http.get("/admin/settings", headers=u["auditor"]).json()}
-    assert limits == {"max_transfer_amount": "10000.00", "approval_threshold": "5000.00"}
+    assert {k: limits[k] for k in ("max_transfer_amount", "approval_threshold")} == {"max_transfer_amount": "10000.00", "approval_threshold": "5000.00"}
 
 
 def test_admin_blocks_an_account_and_sets_daily_limit(http, u):

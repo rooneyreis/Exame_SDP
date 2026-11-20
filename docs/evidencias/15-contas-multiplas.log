@@ -1,0 +1,171 @@
+
+══════ Cenário 15 — Várias contas por cliente (regiões e moedas diferentes) ══════
+(2026-11-20T09:45:41Z)
+
+▶ 1. Um cliente novo, registado na Europa, com a primeira conta aberta pelo KYC
+  POST /auth/register -> HTTP 201
+  ✔ registo na região EU (HTTP 201)
+  POST /admin/users/a1755b73-c135-4fab-b7e8-c60ef6515043/approve-kyc -> HTTP 200
+  ✔ KYC aprovado (HTTP 200)
+  POST /accounts/GS-EU-00000173/deposit -> HTTP 200 (X-Served-By: api-1)
+  ✔ depósito de 2000.00 EUR ao balcão em GS-EU-00000173 (HTTP 200)
+  POST /auth/login -> HTTP 200
+  GET /accounts -> HTTP 200 (X-Served-By: api-2)
+    [
+      {
+        "iban": "GS-EU-00000173",
+        "region": "EU",
+        "currency": "EUR",
+        "balance": "2000.00"
+      }
+    ]
+
+▶ 2. O cliente pede uma conta em África, em meticais
+  POST /account-requests -> HTTP 201 (X-Served-By: api-1)
+  ✔ pedido registado (HTTP 201)
+    {
+      "id": "d4bddacb-ab8d-45fc-93d1-594a1f365a77",
+      "kind": "ABERTURA",
+      "region": "AF",
+      "currency": "MZN",
+      "status": "PENDENTE"
+    }
+  POST /account-requests -> HTTP 409 (X-Served-By: api-2)
+  ✔ um segundo pedido igual é recusado (HTTP 409)
+
+▶ 3. O operador vê o pedido na fila e aprova
+  GET /admin/account-requests?status=PENDENTE -> HTTP 200 (X-Served-By: api-1)
+    {"id":"d4bddacb-ab8d-45fc-93d1-594a1f365a77","user_id":"a1755b73-c135-4fab-b7e8-c60ef6515043","kind":"ABERTURA","region":"AF","currency":"MZN","status":"PENDENTE"}
+  POST /admin/account-requests/d4bddacb-ab8d-45fc-93d1-594a1f365a77/approve -> HTTP 200 (X-Served-By: api-2)
+  ✔ pedido aprovado (HTTP 200)
+    {
+      "request": "APROVADO",
+      "account": {
+        "iban": "GS-AF-00000110",
+        "region": "AF",
+        "currency": "MZN",
+        "created": true
+      }
+    }
+  POST /admin/account-requests/d4bddacb-ab8d-45fc-93d1-594a1f365a77/approve -> HTTP 409 (X-Served-By: api-1)
+  ✔ aprovar outra vez não cria uma segunda conta (HTTP 409)
+
+▶ 4. A conta existe só no shard África (o cliente registou-se na Europa)
+  $ psql "host=pg-europa.global.local,pg-europa-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT 'pg-europa' AS no, count(*) AS contas_do_cliente, string_agg(iban || ' ' || currency, ', ') AS contas FROM accounts WHERE user_id = 'a1755b73-c135-4fab-b7e8-c60ef6515043'"
+        no     | contas_do_cliente |       contas       
+    -----------+-------------------+--------------------
+     pg-europa |                 1 | GS-EU-00000173 EUR
+    (1 row)
+    
+  $ psql "host=pg-america.global.local,pg-america-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT 'pg-america' AS no, count(*) AS contas_do_cliente, string_agg(iban || ' ' || currency, ', ') AS contas FROM accounts WHERE user_id = 'a1755b73-c135-4fab-b7e8-c60ef6515043'"
+         no     | contas_do_cliente | contas 
+    ------------+-------------------+--------
+     pg-america |                 0 | 
+    (1 row)
+    
+  $ psql "host=pg-africa.global.local,pg-africa-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT 'pg-africa' AS no, count(*) AS contas_do_cliente, string_agg(iban || ' ' || currency, ', ') AS contas FROM accounts WHERE user_id = 'a1755b73-c135-4fab-b7e8-c60ef6515043'"
+        no     | contas_do_cliente |       contas       
+    -----------+-------------------+--------------------
+     pg-africa |                 1 | GS-AF-00000110 MZN
+    (1 row)
+    
+  POST /auth/login -> HTTP 200
+  GET /accounts -> HTTP 200 (X-Served-By: api-2)
+    [
+      {
+        "iban": "GS-EU-00000173",
+        "region": "EU",
+        "currency": "EUR",
+        "balance": "2000.00",
+        "status": "ATIVA"
+      },
+      {
+        "iban": "GS-AF-00000110",
+        "region": "AF",
+        "currency": "MZN",
+        "balance": "0.00",
+        "status": "ATIVA"
+      }
+    ]
+  ✔ GET /accounts junta as contas dos dois shards
+
+▶ 5. Limites antes
+  GET /me/limits -> HTTP 200 (X-Served-By: api-1)
+    {
+      "daily_limit_eur": "50000.00",
+      "sent_today_eur": "0.00",
+      "remaining_eur": "50000.00",
+      "max_transfer_eur": "10000.00",
+      "active_accounts": 2,
+      "max_accounts": 5
+    }
+
+▶ 6. Transferência entre as contas do próprio cliente: EU (EUR) → AF (MZN), 2PC com câmbio
+  POST /transfers -> HTTP 201 (X-Served-By: api-2)
+  ✔ transferência confirmada (HTTP 201)
+    {
+      "state": "CONFIRMADA",
+      "kind": "DISTRIBUIDA",
+      "own_transfer": true,
+      "amount": "100.00",
+      "from_currency": "EUR",
+      "fx_rate": "70.50000000",
+      "converted_amount": "7050.00",
+      "to_currency": "MZN"
+    }
+    09:45:45.608  INICIADA   {"kind":"DISTRIBUIDA","amount":"100.00","signer":"api-2","fx_rate":"70.50000000","converted":"7050.00","approved_by":null,"to_currency":"MZN","initiated_by":"a1755b73-c135-4fab-b7e8-c60ef6515043","from_currency":"EUR","initiated_role":"cliente"}
+    09:45:45.614  PREPARANDO
+    09:45:45.634  PREPARADO_EU   {"iban":"GS-EU-00000173","side":"DEBITO"}
+    09:45:45.652  PREPARADO_AF   {"iban":"GS-AF-00000110","side":"CREDITO"}
+    09:45:45.657  DECISAO_COMMIT
+    09:45:45.661  COMMIT_EU
+    09:45:45.665  COMMIT_AF
+    09:45:45.670  CONFIRMADA
+  GET /me/limits -> HTTP 200 (X-Served-By: api-1)
+    {
+      "sent_today_eur": "0.00",
+      "remaining_eur": "50000.00"
+    }
+  ✔ entre contas próprias não conta para o limite diário (o dinheiro não sai do cliente)
+
+▶ 7. Um envio para outra pessoa a partir da conta em África: conta para o limite (em EUR)
+  POST /transfers -> HTTP 201 (X-Served-By: api-2)
+  ✔ 3525.00 MZN enviados (HTTP 201)
+    {
+      "state": "CONFIRMADA",
+      "amount": "3525.00",
+      "from_currency": "MZN",
+      "amount_eur": "50.00"
+    }
+  GET /me/limits -> HTTP 200 (X-Served-By: api-1)
+    {
+      "daily_limit_eur": "50000.00",
+      "sent_today_eur": "50.00",
+      "remaining_eur": "49950.00",
+      "remaining_by_currency": {
+        "EUR": "49950.00",
+        "MZN": "3521475.00"
+      }
+    }
+  ✔ limite atualizado: 3525.00 MZN = 50.00 EUR somados ao dia do cliente
+  GET /accounts -> HTTP 200 (X-Served-By: api-2)
+    [
+      {
+        "iban": "GS-EU-00000173",
+        "currency": "EUR",
+        "balance": "1900.00"
+      },
+      {
+        "iban": "GS-AF-00000110",
+        "currency": "MZN",
+        "balance": "3525.00"
+      }
+    ]
+
+▶ 8. Verificação final
+  GET /admin/consistency -> HTTP 200 (X-Served-By: api-1)
+    {"ok":true,"checked_transactions":476,"confirmed":437,"aborted":39,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[],"AF":[]},"problems":[]}
+  ✔ /admin/consistency OK: sem dinheiro perdido nem duplicado
+
+══════ Cenário 15 concluído ══════
+(2026-11-20T09:45:46Z)

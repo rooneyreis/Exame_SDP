@@ -27,6 +27,7 @@ from psycopg.rows import dict_row
 
 from common.audit import AuditLog
 from common.crypto import check_signed_request, load_ed25519_private, load_ed25519_public, load_trusted_signers
+from common import limits
 from common.db import REGIONS, make_pool, region_of_iban, shard_conninfo
 from common.logging import add_request_logging, log_extra, setup_logging, tx_id_var
 from common.reports import record as record_report
@@ -92,21 +93,21 @@ add_request_logging(app, log)
 
 # --- limits configured by the administrator (settings table) -------------------------
 
-_limit_cache = {"at": 0.0, "value": logic.MAX_AMOUNT}
+_last_limits = dict(limits.DEFAULTS)
 
 
-async def max_transfer_amount() -> Decimal:
-    """Authoritative maximum per transfer (the api also checks it, but the coordinator decides)."""
-    if time.monotonic() - _limit_cache["at"] > 0.5:   # practically fresh: an admin change applies at once
-        try:
-            async with core.connection() as conn:
-                row = await (await conn.execute("SELECT value FROM settings WHERE key = 'max_transfer_amount'")).fetchone()
-            if row:
-                _limit_cache["value"] = row["value"]
-            _limit_cache["at"] = time.monotonic()
-        except Exception as exc:  # settings table missing (old schema): keep the last known value
-            log.warning(f"limites indisponíveis, a usar {_limit_cache['value']}: {exc!r}")
-    return _limit_cache["value"]
+async def current_limits() -> dict:
+    """Authoritative limits (the api also checks them, but the coordinator decides): max per
+    transfer and daily limit per client, both in EUR. Read on every transfer, so an admin
+    change applies to the very next one (on both api instances and here)."""
+    global _last_limits
+    try:
+        async with core.connection() as conn:
+            rows = await (await conn.execute("SELECT key, value FROM settings")).fetchall()
+        _last_limits = {**limits.DEFAULTS, **{r["key"]: r["value"] for r in rows}}
+    except Exception as exc:  # pg-core briefly unreachable: keep the last known values
+        log.warning(f"limites indisponíveis, a usar os últimos conhecidos: {exc!r}")
+    return _last_limits
 
 
 # --- durable log ---------------------------------------------------------------------
@@ -163,7 +164,7 @@ async def connect_shard(region: str) -> psycopg.AsyncConnection:
 async def read_account(region: str, iban: str) -> dict | None:
     async with await connect_shard(region) as conn:
         return await (await conn.execute(
-            "SELECT iban, currency, status FROM accounts WHERE iban = %s", (iban,))).fetchone()
+            "SELECT iban, user_id, currency, status FROM accounts WHERE iban = %s", (iban,))).fetchone()
 
 
 async def apply_leg(conn, tx: dict, side: str, iban: str) -> None:
@@ -335,8 +336,8 @@ async def submit(request: Request):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"pedido rejeitado: {reason}")
 
     payload = json.loads(body)
-    max_amount = await max_transfer_amount()
-    if problem := logic.payload_problem(payload, logic.utcnow(), max_amount):
+    # The maximum is in EUR: checked in process_transfer, once the source currency is known.
+    if problem := logic.payload_problem(payload, logic.utcnow(), None):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, problem)
     tx_id_var.set(payload["tx_id"])
 
@@ -377,6 +378,20 @@ async def process_transfer(payload: dict, headers) -> JSONResponse:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "sem taxa de câmbio")
         rate = row["rate"]
 
+    # Limits in EUR (max per transfer; daily limit per client, summed over all their accounts).
+    eur_rate = Decimal(1)
+    if src["currency"] != "EUR":
+        async with core.connection() as conn:
+            row = await (await conn.execute(limits.EUR_RATE_SQL, (src["currency"],))).fetchone()
+        if row is None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "sem taxa de câmbio para EUR")
+        eur_rate = row["rate"]
+    amount_eur = limits.to_eur(amount, eur_rate)
+    conf = await current_limits()
+    if problem := limits.max_problem(amount_eur, conf["max_transfer_amount"]):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, problem)
+    own_transfer = str(src["user_id"]) == str(dst["user_id"])
+
     tx = {
         "tx_id": uuid.UUID(payload["tx_id"]), "idempotency_key": key, "user_id": payload["user_id"],
         "from_iban": payload["from_iban"], "to_iban": payload["to_iban"],
@@ -389,22 +404,33 @@ async def process_transfer(payload: dict, headers) -> JSONResponse:
         "initiated_role": payload.get("initiated_role") or "cliente",
         "approved_by": payload.get("approved_by"),
         "request_id": payload.get("request_id"),
+        "amount_eur": amount_eur, "own_transfer": own_transfer,
     }
 
     in_flight.add(payload["tx_id"])
     try:
         # INICIADA, committed immediately: from now on the transaction exists in the log.
+        # The daily limit per client is checked in the SAME transaction, under a lock per
+        # client: two concurrent transfers from different accounts of the same client are
+        # serialised here, so together they can never go over the limit.
+        over_limit = None
         async with core.connection() as conn:
-            inserted = await (await conn.execute(
-                """INSERT INTO transactions (tx_id, idempotency_key, user_id, from_iban, to_iban, from_region,
-                       to_region, amount, from_currency, to_currency, fx_rate, converted_amount, kind, state,
-                       request_signature, request_sha256, initiated_by, initiated_role, approved_by, request_id)
-                   VALUES (%(tx_id)s, %(idempotency_key)s, %(user_id)s, %(from_iban)s, %(to_iban)s, %(from_region)s,
-                       %(to_region)s, %(amount)s, %(from_currency)s, %(to_currency)s, %(fx_rate)s,
-                       %(converted_amount)s, %(kind)s, 'INICIADA', %(sig)s, %(sha)s, %(initiated_by)s,
-                       %(initiated_role)s, %(approved_by)s, %(request_id)s)
-                   ON CONFLICT DO NOTHING RETURNING tx_id""",
-                {**tx, "sig": headers.get("x-signature"), "sha": headers.get("x-payload-sha256")})).fetchone()
+            async with conn.transaction():
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext('daily:' || %s))", (str(tx["user_id"]),))
+                if not own_transfer:
+                    sent = (await (await conn.execute(limits.SENT_TODAY_SQL, (tx["user_id"],))).fetchone())["total"]
+                    over_limit = limits.daily_problem(sent, amount_eur, conf["daily_limit_eur"])
+                inserted = await (await conn.execute(
+                    """INSERT INTO transactions (tx_id, idempotency_key, user_id, from_iban, to_iban, from_region,
+                           to_region, amount, from_currency, to_currency, fx_rate, converted_amount, kind, state,
+                           request_signature, request_sha256, initiated_by, initiated_role, approved_by, request_id,
+                           amount_eur, own_transfer)
+                       VALUES (%(tx_id)s, %(idempotency_key)s, %(user_id)s, %(from_iban)s, %(to_iban)s, %(from_region)s,
+                           %(to_region)s, %(amount)s, %(from_currency)s, %(to_currency)s, %(fx_rate)s,
+                           %(converted_amount)s, %(kind)s, 'INICIADA', %(sig)s, %(sha)s, %(initiated_by)s,
+                           %(initiated_role)s, %(approved_by)s, %(request_id)s, %(amount_eur)s, %(own_transfer)s)
+                       ON CONFLICT DO NOTHING RETURNING tx_id""",
+                    {**tx, "sig": headers.get("x-signature"), "sha": headers.get("x-payload-sha256")})).fetchone()
         if inserted is None:  # the same request arrived twice at the same time
             return response_for(await tx_view(tx["tx_id"]), replay=True)
         await event(tx["tx_id"], "INICIADA", kind=tx["kind"], amount=str(amount), from_currency=tx["from_currency"],
@@ -412,7 +438,9 @@ async def process_transfer(payload: dict, headers) -> JSONResponse:
                     signer=headers.get("x-signer"), initiated_by=tx["initiated_by"], initiated_role=tx["initiated_role"],
                     approved_by=tx["approved_by"])
 
-        if tx["kind"] == "LOCAL":
+        if over_limit:
+            await set_state(tx["tx_id"], "ABORTADA", over_limit)   # logged, never executed
+        elif tx["kind"] == "LOCAL":
             await run_local(tx)
         else:
             await run_2pc(tx)

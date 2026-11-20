@@ -16,11 +16,12 @@ from decimal import Decimal
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from common import limits
 from common.audit import verify_chain
 from common.db import REGIONS, is_valid_iban, region_of_iban
 from common.transfers import transfer_tx_id
 
-from .main import (account_out, core, load_account, log, record, require_permission, settings, shards,
+from .main import (account_out, core, eur_value, load_account, log, record, require_permission, settings, shards,
                    signed_post)
 from .schemas import AccountUpdate, Decision, SettingsUpdate, TransferRequestIn
 
@@ -38,7 +39,7 @@ async def current_settings(fresh: bool = True) -> dict:
     uma cache local deixaria uma delas a aplicar o limite antigo depois de o admin o mudar."""
     async with core.connection() as conn:
         rows = await (await conn.execute("SELECT key, value FROM settings")).fetchall()
-    values = {"max_transfer_amount": Decimal("10000.00"), "approval_threshold": Decimal("5000.00")}
+    values = dict(limits.DEFAULTS)
     values.update({r["key"]: r["value"] for r in rows})
     return values
 
@@ -124,18 +125,17 @@ async def create_request(body: TransferRequestIn, request: Request,
                          claims: dict = Depends(require_permission("transfer_requests:create"))):
     if body.from_iban == body.to_iban:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "origem e destino iguais")
-    limits = await current_settings()
-    if body.amount > limits["max_transfer_amount"]:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            f"montante acima do máximo por transferência ({limits['max_transfer_amount']:.2f})")
+    conf = await current_settings()
     source = await load_account(body.from_iban)
+    if problem := limits.max_problem(await eur_value(body.amount, source["currency"]), conf["max_transfer_amount"]):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, problem)
     await load_account(body.to_iban)                      # 404 se o destino não existir
     if source["status"] != "ATIVA":
         raise HTTPException(status.HTTP_409_CONFLICT, "conta de origem bloqueada")
     if body.amount > source["balance"]:
         raise HTTPException(status.HTTP_409_CONFLICT, "saldo insuficiente na conta de origem")
 
-    requires_approval = body.amount >= limits["approval_threshold"]
+    requires_approval = body.amount >= conf["approval_threshold"]
     rid = uuid.uuid4()
     async with core.connection() as conn:
         await conn.execute(
@@ -284,6 +284,8 @@ async def update_account(iban: str, body: AccountUpdate, request: Request,
             old = await (await conn.execute("SELECT * FROM accounts WHERE iban = %s FOR UPDATE", (iban,))).fetchone()
             if old is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "conta não encontrada")
+            if old["status"] == "ENCERRADA":
+                raise HTTPException(status.HTTP_409_CONFLICT, "a conta está encerrada")
             sets = ", ".join(f"{k} = %s" for k in changes)
             new = await (await conn.execute(f"UPDATE accounts SET {sets} WHERE iban = %s RETURNING *",
                                             [*changes.values(), iban])).fetchone()

@@ -67,7 +67,7 @@ git clone https://github.com/rooneyreis/Exame_SDP.git ~/global-scale-system && c
 docker compose up -d --wait   # 14 contentores
 ./scripts/seed.sh             # câmbios, 3 contas por shard, staff e 9 clientes
 make test                     # testes unitários + integração (~5 min)
-./scripts/demo/run-all.sh     # os 14 cenários de demonstração (~5 min)
+./scripts/demo/run-all.sh     # os 15 cenários de demonstração (~5 min)
 ```
 
 Documentação interativa da API: `https://localhost/docs` (OpenAPI gerada pelo FastAPI).
@@ -361,6 +361,32 @@ Endpoints novos: `/admin/users/{id}` (PATCH), `/admin/users/{id}/status`, `/admi
 
 Migrações de esquema em `infra/postgres/migrations/` (aplicadas uma vez, por ordem, por `scripts/migrate.sh`, que o `seed.sh` chama). Matriz real contra a API: `./scripts/rbac-smoke.sh`.
 
+## Várias contas por cliente
+
+Um cliente pode ter várias contas, em regiões e moedas diferentes: por exemplo, registado na Europa, com uma conta `GS-AF-…` em MZN guardada no `pg-africa`. O routing continua a ser só pelo prefixo do IBAN, por isso uma conta vive sempre no shard da região escolhida, independentemente da região de registo.
+
+| Método | Endpoint | Quem | O que faz |
+|---|---|---|---|
+| GET | `/accounts` | cliente | contas do cliente em **todos** os shards; uma região em baixo não faz falhar as outras (cabeçalho `X-Unavailable-Regions`, e `unavailable_regions` em `/me`) |
+| GET | `/me/limits` | cliente | limite diário por cliente em EUR: enviado hoje, quanto ainda pode enviar (também na moeda de cada conta), máximo por transferência, contas ativas |
+| POST | `/account-requests` | cliente | pede uma conta nova (`region` + `currency`): fica `PENDENTE` |
+| GET | `/account-requests` | cliente | os seus pedidos e as decisões (com o motivo) |
+| POST | `/accounts/{iban}/closure` | cliente | pede o encerramento (só com saldo 0) |
+| GET | `/admin/account-requests` | operador, auditor, admin | fila de pedidos de abertura e encerramento |
+| POST | `/admin/account-requests/{id}/approve` / `reject` | operador | aprova (cria ou encerra a conta) ou rejeita com motivo obrigatório |
+| POST | `/admin/accounts` | operador | abertura direta ao balcão para um cliente ativo |
+
+Regras (verificadas no backend):
+- **No máximo N contas ativas por cliente** (`max_accounts_per_client` nas definições, 5 por omissão; os pedidos pendentes contam). Uma só conta ativa por região + moeda. O cliente tem de estar `ATIVA` no serviço auth, o que é confirmado no momento da decisão.
+- **Criação idempotente:** a conta é criada sob um *advisory lock* por cliente no shard, e uma conta igual já existente é devolvida em vez de se criar outra. Aprovar duas vezes, ou repetir depois de uma falha de rede, nunca cria duas contas. Um lock por cliente no pg-core serializa aberturas concorrentes em regiões diferentes, para o máximo nunca ser ultrapassado.
+- **Encerramento:** só com saldo 0 e sem transações em curso (log do coordenador, e `lock_timeout` sobre a linha, que uma transação preparada mantém bloqueada). A conta passa a `ENCERRADA` (com `closed_at`) e nunca é apagada.
+- **Limite diário por CLIENTE em EUR** (`daily_limit_eur`, 50 000 por omissão): soma os envios do dia de todas as contas, convertidos para EUR à taxa do momento. Abrir mais contas não aumenta o limite. É verificado pelo coordenador **na mesma transação** em que a transferência entra no log, sob um lock por cliente, por isso duas transferências simultâneas de contas diferentes não o ultrapassam. As transferências entre contas do próprio cliente (`own_transfer`) não contam, porque o dinheiro não sai dele. O limite diário de cada conta, no shard, continua a existir.
+- **Máximo por transferência em EUR** (`max_transfer_amount`), convertido a partir da moeda da conta de origem. É aplicado pela api e pelo coordenador.
+- **Transferências entre contas próprias:** entre regiões são 2PC com câmbio, como qualquer outra.
+- **Auditoria:** `CONTA_PEDIDO_ABERTURA`, `CONTA_ABERTURA_APROVADA`, `CONTA_ABERTA_BALCAO`, `CONTA_PEDIDO_REJEITADO`, `CONTA_PEDIDO_ENCERRAMENTO` e `CONTA_ENCERRADA` no registo encadeado por SHA-256.
+
+Esquema: `infra/postgres/migrations/coordinator/003_contas_multiplas.sql` (tabela `account_requests`, colunas `amount_eur` e `own_transfer`, novas definições) e `infra/postgres/migrations/bank/001_conta_encerrada.sql`, aplicada a cada shard pelo `migrate.sh`. Seed: o **Bruno Costa** tem contas na Europa (EUR), na América (USD) e em África (MZN). Testes em `tests/integration/test_phase10_multi_accounts.py` e no cenário `15-contas-multiplas.sh`.
+
 ## Cenários de demonstração
 
 Cada script imprime o que vai fazer, executa com `curl --cacert infra/certs/ca.crt`, mostra os resultados com `jq`, termina com erro ao primeiro resultado inesperado e grava a saída em `docs/evidencias/<cenário>.log`.
@@ -381,6 +407,7 @@ Cada script imprime o que vai fazer, executa com `curl --cacert infra/certs/ca.c
 | `12-tls.sh` | Postgres sem TLS, HTTP simples, TLS 1.1 e certificado de outro nó → tudo recusado |
 | `13-particao-rede.sh` | `docker network disconnect` do pg-america depois e antes do PREPARE → commit concluído / abort sem débito |
 | `14-regiao-africa.sh` | região África: registo AF → KYC → conta GS-AF em MZN no pg-africa; AF → AF local; 2PC EU → AF (EUR → MZN) e AF → AM (ordem EU → AM → AF); `fail_participant=AF` → rollback da Europa; failover e failback do shard África |
+| `15-contas-multiplas.sh` | cliente registado na Europa pede uma conta em África → o operador aprova (aprovar outra vez não duplica) → a conta só existe no pg-africa → transferência entre contas próprias EU → AF (2PC + câmbio, não conta para o limite) → um envio a terceiros atualiza `/me/limits` |
 
 ```bash
 ./scripts/demo/run-all.sh                 # todos, por ordem
@@ -466,7 +493,7 @@ global-scale-system/
 │   └── keys/                   # gerado por gen-keys.sh (não versionado)
 ├── scripts/
 │   ├── gen-certs.sh, gen-keys.sh, seed.sh, migrate.sh, failover.sh, test.sh, deploy.sh, rbac-smoke.sh
-│   └── demo/                   # 14 cenários + run-all.sh + lib.sh + concurrency.py
+│   └── demo/                   # 15 cenários + run-all.sh + lib.sh + concurrency.py
 ├── tests/
 │   ├── unit/                   # lógica pura, sem Docker
 │   └── integration/            # contra o ambiente a correr

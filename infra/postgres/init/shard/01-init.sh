@@ -26,7 +26,8 @@ CREATE TABLE accounts (
   user_id     UUID NOT NULL,
   currency    TEXT NOT NULL CHECK (currency IN ('EUR','USD','MZN')),
   balance     NUMERIC(18,2) NOT NULL DEFAULT 0 CHECK (balance >= 0),
-  status      TEXT NOT NULL DEFAULT 'ATIVA' CHECK (status IN ('ATIVA','BLOQUEADA')),
+  status      TEXT NOT NULL DEFAULT 'ATIVA' CHECK (status IN ('ATIVA','BLOQUEADA','ENCERRADA')),
+  closed_at   TIMESTAMPTZ,
   daily_limit NUMERIC(18,2) NOT NULL DEFAULT ${DAILY_LIMIT},
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );

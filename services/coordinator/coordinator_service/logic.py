@@ -64,8 +64,9 @@ def credit_problem(account: dict | None) -> str | None:
     return None
 
 
-def payload_problem(payload: dict, now: datetime, max_amount: Decimal = MAX_AMOUNT) -> str | None:
-    """Validates a signed transfer request (the signature itself was already checked)."""
+def payload_problem(payload: dict, now: datetime, max_amount: Decimal | None = MAX_AMOUNT) -> str | None:
+    """Validates a signed transfer request (the signature itself was already checked).
+    max_amount=None: the maximum is checked later, in EUR, once the source currency is known."""
     required = {"tx_id", "idempotency_key", "user_id", "from_iban", "to_iban", "amount", "ts"}
     if missing := required - payload.keys():
         return f"campos em falta: {sorted(missing)}"
@@ -77,8 +78,9 @@ def payload_problem(payload: dict, now: datetime, max_amount: Decimal = MAX_AMOU
         amount = Decimal(payload["amount"])
     except (InvalidOperation, TypeError):
         return "montante inválido"
-    if amount <= 0 or amount > max_amount or amount != amount.quantize(CENT):
-        return f"montante fora dos limites (0 < montante <= {max_amount}, 2 casas decimais)"
+    if amount <= 0 or (max_amount is not None and amount > max_amount) or amount != amount.quantize(CENT):
+        return (f"montante fora dos limites (0 < montante <= {max_amount}, 2 casas decimais)" if max_amount is not None
+                else "montante fora dos limites (positivo, 2 casas decimais)")
     if str(transfer_tx_id(payload["user_id"], payload["idempotency_key"])) != payload["tx_id"]:
         return "tx_id não corresponde à Idempotency-Key"
     try:

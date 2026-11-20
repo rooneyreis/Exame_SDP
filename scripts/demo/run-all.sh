@@ -20,6 +20,7 @@ SCENARIOS=(
   12-tls
   13-particao-rede
   14-regiao-africa
+  15-contas-multiplas
 )
 
 start=$(date +%s)

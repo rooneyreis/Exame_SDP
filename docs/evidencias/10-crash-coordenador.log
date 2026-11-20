@@ -1,52 +1,52 @@
 
 ══════ Cenário 10 — Crash do coordenador depois da decisão ══════
-(2026-11-20T09:25:16Z)
-  saldos antes: GS-AM-00000001=17336.45 USD   GS-EU-00000002=4174.80 EUR
+(2026-11-20T09:59:08Z)
+  saldos antes: GS-AM-00000001=17864.79 USD   GS-EU-00000002=3840.92 EUR
 
 ▶ 1. Ativar crash_after_decision
-  POST /admin/chaos -> HTTP 200 (X-Served-By: api-2)
+  POST /admin/chaos -> HTTP 200 (X-Served-By: api-1)
   chaos no coordenador: {"pause_before_prepare":0,"pause_after_prepare":0,"crash_after_prepare":false,"crash_after_decision":true,"fail_participant":null}
 
 ▶ 2. O David transfere 50.00 USD para o Bruno — o coordenador morre a meio
   POST /auth/login -> HTTP 200
-  POST /transfers -> HTTP 503 (X-Served-By: api-1)
+  POST /transfers -> HTTP 503 (X-Served-By: api-2)
     {
       "detail": "coordenador indisponível: repita o pedido com a mesma Idempotency-Key",
-      "tx_id": "72d99385-de15-569f-86ed-b37f33cac98d"
+      "tx_id": "7e209f9b-c93f-5f8f-9c71-6f017538747a"
     }
-  ✔ a api respondeu 503 mas devolveu o tx_id (72d99385-de15-569f-86ed-b37f33cac98d)
+  ✔ a api respondeu 503 mas devolveu o tx_id (7e209f9b-c93f-5f8f-9c71-6f017538747a)
   logs do coordenador antes de morrer:
     [DECISAO_COMMIT]
     CHAOS: crash depois da DECISAO_COMMIT, antes dos COMMIT PREPARED
   transações preparadas à espera de decisão:
-  pg-europa: 1_NzJkOTkzODUtZGUxNS01NjlmLTg2ZWQtYjM3ZjMzY2FjOThk_RVU=  (preparada às 09:25:16)
-  pg-america: 1_NzJkOTkzODUtZGUxNS01NjlmLTg2ZWQtYjM3ZjMzY2FjOThk_QU0=  (preparada às 09:25:16)
+  pg-europa: 1_N2UyMDlmOWItYzkzZi01ZjhmLTljNzEtNmYwMTc1Mzg3NDdh_RVU=  (preparada às 09:59:10)
+  pg-america: 1_N2UyMDlmOWItYzkzZi01ZjhmLTljNzEtNmYwMTc1Mzg3NDdh_QU0=  (preparada às 09:59:10)
   pg-africa: nenhuma
 
 ▶ 3. O Docker reinicia o coordenador sozinho
-  ✔ RestartCount: 7 → 8
+  ✔ RestartCount: 5 → 6
   ✔ coordinator está healthy
 
 ▶ 4. O recovery loop encontra DECISAO_COMMIT no log e conclui a transação
-    09:25:16.679  INICIADA   {"kind":"DISTRIBUIDA","amount":"50.00","signer":"api-1","fx_rate":"0.92592593","converted":"46.30","approved_by":null,"to_currency":"EUR","initiated_by":"22222222-0000-4000-8000-000000000001","from_currency":"USD","initiated_role":"cliente"}
-    09:25:16.684  PREPARANDO
-    09:25:16.701  PREPARADO_EU   {"iban":"GS-EU-00000002","side":"CREDITO"}
-    09:25:16.721  PREPARADO_AM   {"iban":"GS-AM-00000001","side":"DEBITO"}
-    09:25:16.725  DECISAO_COMMIT
-    09:25:17.673  RECUPERACAO_COMMIT_EU
-    09:25:17.678  RECUPERACAO_COMMIT_AM
-    09:25:17.684  CONFIRMADA   {"recovered":true}
+    09:59:10.960  INICIADA   {"kind":"DISTRIBUIDA","amount":"50.00","signer":"api-2","fx_rate":"0.92592593","converted":"46.30","approved_by":null,"to_currency":"EUR","initiated_by":"22222222-0000-4000-8000-000000000001","from_currency":"USD","initiated_role":"cliente"}
+    09:59:10.964  PREPARANDO
+    09:59:10.981  PREPARADO_EU   {"iban":"GS-EU-00000002","side":"CREDITO"}
+    09:59:11.000  PREPARADO_AM   {"iban":"GS-AM-00000001","side":"DEBITO"}
+    09:59:11.005  DECISAO_COMMIT
+    09:59:11.915  RECUPERACAO_COMMIT_EU
+    09:59:11.919  RECUPERACAO_COMMIT_AM
+    09:59:11.924  CONFIRMADA   {"recovered":true}
   ✔ CONFIRMADA pela recuperação (RECUPERACAO_COMMIT_*)
 
 ▶ 5. O cliente repete o pedido com a mesma Idempotency-Key: não há segundo débito
-  POST /transfers -> HTTP 200 (X-Served-By: api-1)
+  POST /transfers -> HTTP 200 (X-Served-By: api-2)
   HTTP 200  state=CONFIRMADA  idempotent_replay=true
-  GS-AM-00000001: 17336.45 → 17286.45 USD    GS-EU-00000002: 4174.80 → 4221.10 EUR
+  GS-AM-00000001: 17864.79 → 17814.79 USD    GS-EU-00000002: 3840.92 → 3887.22 EUR
   ✔ −50.00 USD / +46.30 EUR, uma única vez
   chaos depois do reinício (estado em memória, volta a off):
-  GET /admin/consistency -> HTTP 200 (X-Served-By: api-1)
-    {"ok":true,"checked_transactions":409,"confirmed":374,"aborted":35,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[],"AF":[]},"problems":[]}
+  GET /admin/consistency -> HTTP 200 (X-Served-By: api-2)
+    {"ok":true,"checked_transactions":590,"confirmed":533,"aborted":57,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[],"AF":[]},"problems":[]}
   ✔ /admin/consistency OK: sem dinheiro perdido nem duplicado
 
 ══════ Cenário 10 concluído ══════
-(2026-11-20T09:25:23Z)
+(2026-11-20T09:59:17Z)

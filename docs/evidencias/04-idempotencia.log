@@ -1,44 +1,44 @@
 
 ══════ Cenário 04 — Idempotência ══════
-(2026-11-20T09:23:36Z)
+(2026-11-20T09:58:32Z)
 
 ▶ 1. A Emily envia a mesma transferência 3 vezes (ex.: o cliente repetiu por timeout de rede)
   POST /auth/login -> HTTP 200
-  Idempotency-Key: demo04-1795166616061490807
+  Idempotency-Key: demo04-1795168712587205348
   POST /transfers -> HTTP 201 (X-Served-By: api-1)
-  envio 1: HTTP 201  tx_id=ed601147-5954-5dc2-90db-d864a5288dc1  state=CONFIRMADA  replay=false
+  envio 1: HTTP 201  tx_id=00d22ccf-dbf4-5f64-a4b5-f26d7ab73027  state=CONFIRMADA  replay=false
   POST /transfers -> HTTP 200 (X-Served-By: api-2)
-  envio 2: HTTP 200  tx_id=ed601147-5954-5dc2-90db-d864a5288dc1  state=CONFIRMADA  replay=true
+  envio 2: HTTP 200  tx_id=00d22ccf-dbf4-5f64-a4b5-f26d7ab73027  state=CONFIRMADA  replay=true
   POST /transfers -> HTTP 200 (X-Served-By: api-1)
-  envio 3: HTTP 200  tx_id=ed601147-5954-5dc2-90db-d864a5288dc1  state=CONFIRMADA  replay=true
+  envio 3: HTTP 200  tx_id=00d22ccf-dbf4-5f64-a4b5-f26d7ab73027  state=CONFIRMADA  replay=true
   ✔ o mesmo tx_id nas 3 respostas
 
 ▶ 2. Só existe UM débito no shard
-  $ psql "host=pg-america.global.local,pg-america-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT count(*) AS debitos FROM movements WHERE tx_id = 'ed601147-5954-5dc2-90db-d864a5288dc1' AND type = 'DEBITO'"
+  $ psql "host=pg-america.global.local,pg-america-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT count(*) AS debitos FROM movements WHERE tx_id = '00d22ccf-dbf4-5f64-a4b5-f26d7ab73027' AND type = 'DEBITO'"
      debitos 
     ---------
            1
     (1 row)
     
-  saldo GS-AM-00000002: 5569.40 → 5544.40 USD
+  saldo GS-AM-00000002: 5739.92 → 5714.92 USD
   ✔ debitado uma única vez (−25.00)
   os pedidos repetidos ficam registados no log:
-  GET /transfers/ed601147-5954-5dc2-90db-d864a5288dc1 -> HTTP 200 (X-Served-By: api-1)
-    09:23:36.347  INICIADA   {"kind":"DISTRIBUIDA","amount":"25.00","signer":"api-1","fx_rate":"0.92592593","converted":"23.15","approved_by":null,"to_currency":"EUR","initiated_by":"22222222-0000-4000-8000-000000000002","from_currency":"USD","initiated_role":"cliente"}
-    09:23:36.352  PREPARANDO
-    09:23:36.369  PREPARADO_EU   {"iban":"GS-EU-00000003","side":"CREDITO"}
-    09:23:36.386  PREPARADO_AM   {"iban":"GS-AM-00000002","side":"DEBITO"}
-    09:23:36.391  DECISAO_COMMIT
-    09:23:36.394  COMMIT_EU
-    09:23:36.398  COMMIT_AM
-    09:23:36.403  CONFIRMADA
-    09:23:36.430  LIQUIDACAO_ACEITE   {"http":200,"reason":"registada no ledger","bank_timestamp":"2026-11-20T09:23:36Z"}
-    09:23:36.470  PEDIDO_REPETIDO   {"signer":"api-2"}
-    09:23:36.523  PEDIDO_REPETIDO   {"signer":"api-1"}
+  GET /transfers/00d22ccf-dbf4-5f64-a4b5-f26d7ab73027 -> HTTP 200 (X-Served-By: api-1)
+    09:58:32.863  INICIADA   {"kind":"DISTRIBUIDA","amount":"25.00","signer":"api-1","fx_rate":"0.92592593","converted":"23.15","approved_by":null,"to_currency":"EUR","initiated_by":"22222222-0000-4000-8000-000000000002","from_currency":"USD","initiated_role":"cliente"}
+    09:58:32.868  PREPARANDO
+    09:58:32.885  PREPARADO_EU   {"iban":"GS-EU-00000003","side":"CREDITO"}
+    09:58:32.903  PREPARADO_AM   {"iban":"GS-AM-00000002","side":"DEBITO"}
+    09:58:32.907  DECISAO_COMMIT
+    09:58:32.910  COMMIT_EU
+    09:58:32.914  COMMIT_AM
+    09:58:32.918  CONFIRMADA
+    09:58:32.948  LIQUIDACAO_ACEITE   {"http":200,"reason":"registada no ledger","bank_timestamp":"2026-11-20T09:58:32Z"}
+    09:58:32.986  PEDIDO_REPETIDO   {"signer":"api-2"}
+    09:58:33.042  PEDIDO_REPETIDO   {"signer":"api-1"}
 
 ▶ 3. Reutilizar a chave com outro montante é recusado
   POST /transfers -> HTTP 409 (X-Served-By: api-2)
   ✔ Idempotency-Key já usada com outros dados (HTTP 409)
 
 ══════ Cenário 04 concluído ══════
-(2026-11-20T09:23:37Z)
+(2026-11-20T09:58:34Z)

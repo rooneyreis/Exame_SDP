@@ -13,6 +13,7 @@ PERMISSIONS = {
     "transfers:read:own": "Consultar as próprias transferências",
     "beneficiaries:manage:own": "Gerir os próprios beneficiários",
     "fx:read": "Consultar taxas de câmbio",
+    "accounts:request:own": "Pedir a abertura ou o encerramento de contas próprias",
     # bank operations
     "accounts:read:any": "Consultar qualquer conta e extrato",
     "accounts:cash": "Registar depósitos e levantamentos",
@@ -24,6 +25,9 @@ PERMISSIONS = {
     "beneficiaries:read:any": "Consultar beneficiários de qualquer cliente",
     "beneficiaries:manage:any": "Gerir beneficiários de qualquer cliente",
     "kyc:approve": "Aprovar a abertura de contas (KYC)",
+    "account_requests:read": "Consultar pedidos de abertura e encerramento de contas",
+    "account_requests:decide": "Aprovar ou rejeitar pedidos de abertura e encerramento de contas",
+    "accounts:create:direct": "Abrir contas para clientes ao balcão",
     # users and configuration
     "users:read": "Consultar utilizadores",
     "users:read:sensitive": "Ver dados pessoais decifrados (documento, nascimento)",
@@ -42,21 +46,24 @@ PERMISSIONS = {
 ROLES = {
     "cliente": {
         "accounts:read:own", "transfers:create:own", "transfers:read:own", "beneficiaries:manage:own", "fx:read",
+        "accounts:request:own",
     },
     "operador": {
         "accounts:read:any", "accounts:cash", "transfers:read:any", "transfer_requests:create",
         "transfer_requests:read", "beneficiaries:read:any", "beneficiaries:manage:any", "kyc:approve",
         "users:read", "users:read:sensitive", "settings:read", "fx:read",
+        "account_requests:read", "account_requests:decide", "accounts:create:direct",
     },
     "auditor": {   # read-only by construction: no create/manage/decide permission
         "accounts:read:any", "transfers:read:any", "transfer_requests:read", "beneficiaries:read:any",
         "users:read", "settings:read", "audit:read", "reports:read", "system:status", "fx:read",
+        "account_requests:read",
     },
     "admin": {
         "accounts:read:any", "accounts:manage", "transfers:read:any", "transfer_requests:read",
         "transfer_requests:decide", "beneficiaries:read:any", "beneficiaries:manage:any", "users:read",
         "users:read:sensitive", "users:manage", "settings:read", "settings:manage", "audit:read",
-        "reports:read", "system:status", "system:chaos", "fx:read",
+        "reports:read", "system:status", "system:chaos", "fx:read", "account_requests:read",
     },
     "service": {"accounts:create:internal"},
 }
