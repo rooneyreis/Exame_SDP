@@ -59,6 +59,7 @@ function counterpartyName(ibanValue) {
  * Cada item: { key, txId, date, direction, amount, currency, account, counterparty, title, category, status, kind, settlement }
  */
 export async function activity(accounts, { limit = 100 } = {}) {
+  await beneficiaries.load().catch(() => []);
   const perAccount = await Promise.all(accounts.map((a) => movements(a.iban, limit).then((ms) => ms.map((m) => ({ ...m, account: a })))));
   const all = perAccount.flat();
 

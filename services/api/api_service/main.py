@@ -19,13 +19,14 @@ from decimal import Decimal
 import httpx
 import psycopg
 import psycopg_pool
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 
 from common.audit import AuditLog, verify_chain
 from common.crypto import canonical_json, load_ed25519_private, signed_headers
 from common.db import REGIONS, ShardRouter, is_valid_iban, make_pool, region_of_iban, shard_conninfo
-from common.jwt_auth import TokenValidator, auth_dependencies
+from common.jwt_auth import TokenValidator, auth_dependencies, client_ip
+from common.rbac import has_permission
 from common.logging import add_request_logging, log_extra, setup_logging, tx_id_var
 from common.reports import read_report
 from common.reports import record as record_report
@@ -39,7 +40,22 @@ audit = AuditLog(settings.instance_id, settings.audit_dir)
 
 validator = TokenValidator(jwks_url=settings.jwks_url, ca_file=settings.ca_file,
                            refresh_seconds=settings.jwks_refresh_seconds)
-current_claims, require_role = auth_dependencies(validator)
+
+
+async def security_denied(claims: dict, permission: str, request: Request) -> None:
+    """Tentativas recusadas (URL ou chamada direta à API) ficam na auditoria encadeada."""
+    log.warning(f"acesso negado: {claims.get('role')} -> {request.method} {request.url.path}")
+    await audit.write("ACESSO_NEGADO", actor=claims.get("sub"), actor_role=claims.get("role"),
+                      permission=permission, method=request.method, path=request.url.path,
+                      ip=client_ip(request), result="NEGADO")
+
+
+current_claims, require_role, require_permission = auth_dependencies(validator, on_denied=security_denied)
+
+
+async def record(action: str, claims: dict, request: Request | None, result: str = "OK", **fields) -> None:
+    await audit.write(action, actor=claims.get("sub"), actor_role=claims.get("role"),
+                      ip=client_ip(request) if request else None, result=result, **fields)
 
 shards = ShardRouter(
     {r: shard_conninfo(r, settings.db_user, settings.db_password, settings.ca_file) for r in REGIONS},
@@ -129,14 +145,16 @@ async def load_account(iban: str) -> dict:
     return row
 
 
-def ensure_owner_or_role(account: dict, claims: dict, *staff_roles: str) -> None:
-    """A client only sees its own accounts; staff roles listed here see any account."""
+def ensure_can_read_account(account: dict, claims: dict) -> None:
+    """Cliente: só as suas contas (404 para não revelar que o IBAN existe).
+    Staff: precisa da permissão accounts:read:any (operador, auditor, admin)."""
+    if has_permission(claims["role"], "accounts:read:any"):
+        return
+    if has_permission(claims["role"], "accounts:read:own") and str(account["user_id"]) == claims["sub"]:
+        return
     if claims["role"] == "cliente":
-        if str(account["user_id"]) != claims["sub"]:
-            # 404 instead of 403: does not reveal that the IBAN exists
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "conta não encontrada")
-    elif claims["role"] not in staff_roles:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "sem permissão")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "conta não encontrada")
+    raise HTTPException(status.HTTP_403_FORBIDDEN, "sem permissão")
 
 
 # --- health ----------------------------------------------------------------------
@@ -174,7 +192,7 @@ async def me(claims: dict = Depends(current_claims)):
 
 
 @app.get("/accounts")
-async def my_accounts(claims: dict = Depends(require_role("cliente"))):
+async def my_accounts(claims: dict = Depends(require_permission("accounts:read:own"))):
     # The user's region (JWT claim) says which shard holds their accounts.
     async with read_connection(claims["region"]) as conn:
         rows = await (await conn.execute(
@@ -185,14 +203,14 @@ async def my_accounts(claims: dict = Depends(require_role("cliente"))):
 @app.get("/accounts/{iban}")
 async def get_account(iban: str, claims: dict = Depends(current_claims)):
     account = await load_account(iban)
-    ensure_owner_or_role(account, claims, "operador")
+    ensure_can_read_account(account, claims)
     return account_out(account)
 
 
 @app.get("/accounts/{iban}/movements")
 async def movements(iban: str, limit: int = 100, claims: dict = Depends(current_claims)):
     account = await load_account(iban)
-    ensure_owner_or_role(account, claims, "operador", "auditor")
+    ensure_can_read_account(account, claims)
     async with read_connection(region_of_iban(iban)) as conn:
         rows = await (await conn.execute(
             """SELECT id, tx_id, type, amount, currency, balance_after, origin, created_at
@@ -203,7 +221,7 @@ async def movements(iban: str, limit: int = 100, claims: dict = Depends(current_
 
 
 @app.get("/fx-rates")
-async def fx_rates(claims: dict = Depends(current_claims)):
+async def fx_rates(claims: dict = Depends(require_permission("fx:read"))):
     async with core.connection() as conn:
         rows = await (await conn.execute("SELECT base, quote, rate FROM fx_rates ORDER BY base, quote")).fetchall()
     return [{"base": r["base"], "quote": r["quote"], "rate": f"{r['rate']:.8f}"} for r in rows]
@@ -211,7 +229,7 @@ async def fx_rates(claims: dict = Depends(current_claims)):
 
 # --- operator: local transactions in one shard -------------------------------------
 
-async def cash_operation(iban: str, body: CashOperation, claims: dict, kind: str) -> dict:
+async def cash_operation(iban: str, body: CashOperation, claims: dict, kind: str, request: Request = None) -> dict:
     """Deposit or withdrawal: a normal (local) ACID transaction inside ONE shard."""
     check_iban(iban)
     tx_id = uuid.uuid4()
@@ -241,8 +259,9 @@ async def cash_operation(iban: str, body: CashOperation, claims: dict, kind: str
         raise HTTPException(*error)
     log.info(f"{kind.lower()} de {body.amount} {account['currency']} em {iban}",
              extra=log_extra(tx_id=str(tx_id), operador=claims["sub"]))
-    await audit.write(kind, tx_id=str(tx_id), iban=iban, amount=f"{body.amount:.2f}",
-                      currency=account["currency"], balance_after=f"{new_balance:.2f}", operador=claims["sub"])
+    await record(kind, claims, request, tx_id=str(tx_id), iban=iban, amount=f"{body.amount:.2f}",
+                 currency=account["currency"], before={"balance": f"{account['balance']:.2f}"},
+                 after={"balance": f"{new_balance:.2f}"})
     await record_report(settings.instance_id, {"type": "cash", "operation": kind, "region": region_of_iban(iban),
                                                "currency": account["currency"], "amount": f"{body.amount:.2f}"},
                         settings.audit_dir)
@@ -251,19 +270,21 @@ async def cash_operation(iban: str, body: CashOperation, claims: dict, kind: str
 
 
 @app.post("/accounts/{iban}/deposit")
-async def deposit(iban: str, body: CashOperation, claims: dict = Depends(require_role("operador"))):
-    return await cash_operation(iban, body, claims, "DEPOSITO")
+async def deposit(iban: str, body: CashOperation, request: Request,
+                  claims: dict = Depends(require_permission("accounts:cash"))):
+    return await cash_operation(iban, body, claims, "DEPOSITO", request)
 
 
 @app.post("/accounts/{iban}/withdraw")
-async def withdraw(iban: str, body: CashOperation, claims: dict = Depends(require_role("operador"))):
-    return await cash_operation(iban, body, claims, "LEVANTAMENTO")
+async def withdraw(iban: str, body: CashOperation, request: Request,
+                   claims: dict = Depends(require_permission("accounts:cash"))):
+    return await cash_operation(iban, body, claims, "LEVANTAMENTO", request)
 
 
 # --- internal (service token) ----------------------------------------------------------
 
 @app.post("/internal/accounts", status_code=status.HTTP_201_CREATED)
-async def create_account(body: CreateAccountRequest, claims: dict = Depends(require_role("service"))):
+async def create_account(body: CreateAccountRequest, claims: dict = Depends(require_permission("accounts:create:internal"))):
     """Called by auth after KYC. Creates the account in the shard of the user's region.
     Idempotent per (user, currency): calling it again returns the same account."""
     async with shards.for_region(body.region).connection() as conn:
@@ -295,12 +316,17 @@ async def signed_post(path: str, payload: dict) -> httpx.Response:
 
 @app.post("/transfers")
 async def create_transfer(body: TransferRequest,
+                          request: Request,
                           idempotency_key: str = Header(alias="Idempotency-Key", min_length=1, max_length=100),
-                          claims: dict = Depends(require_role("cliente"))):
+                          claims: dict = Depends(require_permission("transfers:create:own"))):
     if not (is_valid_iban(body.from_iban) and is_valid_iban(body.to_iban)):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "IBAN inválido")
     if body.from_iban == body.to_iban:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "origem e destino iguais")
+    limits = await admin.current_settings()
+    if body.amount > limits["max_transfer_amount"]:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            f"montante acima do máximo por transferência ({limits['max_transfer_amount']:.2f})")
     source = await load_account(body.from_iban)
     if str(source["user_id"]) != claims["sub"]:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conta de origem não encontrada")  # not yours
@@ -312,6 +338,7 @@ async def create_transfer(body: TransferRequest,
         "tx_id": str(tx_id), "idempotency_key": idempotency_key, "user_id": claims["sub"],
         "from_iban": body.from_iban, "to_iban": body.to_iban, "amount": f"{body.amount:.2f}",
         "ts": datetime.now(timezone.utc).isoformat(), "requested_by": settings.instance_id,
+        "initiated_by": claims["sub"], "initiated_role": claims["role"],
     }
     try:
         response = await signed_post("/tx", payload)
@@ -325,15 +352,13 @@ async def create_transfer(body: TransferRequest,
 
 
 @app.get("/transfers/{tx_id}")
-async def get_transfer(tx_id: uuid.UUID, claims: dict = Depends(current_claims)):
+async def get_transfer(tx_id: uuid.UUID, claims: dict = Depends(require_permission("transfers:read:any", "transfers:read:own"))):
     async with core.connection() as conn:
         tx = await (await conn.execute("SELECT * FROM transactions WHERE tx_id = %s", (tx_id,))).fetchone()
         if tx is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "transação não encontrada")
-        if claims["role"] == "cliente" and str(tx["user_id"]) != claims["sub"]:
+        if not has_permission(claims["role"], "transfers:read:any") and str(tx["user_id"]) != claims["sub"]:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "transação não encontrada")
-        if claims["role"] not in ("cliente", "operador", "auditor", "admin"):
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "sem permissão")
         events = await (await conn.execute(
             "SELECT event, detail, at FROM tx_events WHERE tx_id = %s ORDER BY id", (tx_id,))).fetchall()
     tx.pop("request_signature", None)
@@ -345,8 +370,9 @@ async def get_transfer(tx_id: uuid.UUID, claims: dict = Depends(current_claims))
 # --- admin ------------------------------------------------------------------------------
 
 @app.post("/admin/chaos")
-async def set_chaos(body: ChaosRequest, claims: dict = Depends(require_role("admin"))):
+async def set_chaos(body: ChaosRequest, request: Request, claims: dict = Depends(require_permission("system:chaos"))):
     mode = {k: v for k, v in body.model_dump().items() if v is not None}
+    await record("SIMULACAO_FALHAS", claims, request, after=mode)
     try:
         response = await signed_post("/admin/chaos", {"mode": mode, "by": claims["sub"],
                                                       "ts": datetime.now(timezone.utc).isoformat()})
@@ -356,7 +382,7 @@ async def set_chaos(body: ChaosRequest, claims: dict = Depends(require_role("adm
 
 
 @app.get("/admin/consistency")
-async def consistency(claims: dict = Depends(require_role("auditor", "admin"))):
+async def consistency(claims: dict = Depends(require_permission("audit:read"))):
     """Checks the 2PC guarantees across ALL shards:
     - every CONFIRMADA transfer has exactly 1 DEBITO (origin shard) and 1 CREDITO (destination shard)
     - every ABORTADA transfer has no movement at all
@@ -416,7 +442,7 @@ def today() -> str:
 
 @app.get("/admin/audit")
 async def audit_check(date: str = Query(default_factory=today, pattern=r"^\d{4}-\d{2}-\d{2}$"),
-                      claims: dict = Depends(require_role("auditor", "admin"))):
+                      claims: dict = Depends(require_permission("audit:read"))):
     """Reads the audit logs of every node from the NFS and validates each hash chain."""
     def check() -> dict:
         folder = os.path.join(settings.audit_dir, date)
@@ -441,7 +467,7 @@ async def audit_check(date: str = Query(default_factory=today, pattern=r"^\d{4}-
 
 @app.get("/admin/reports")
 async def daily_report(date: str = Query(default_factory=today, pattern=r"^\d{4}-\d{2}-\d{2}$"),
-                       claims: dict = Depends(require_role("auditor", "admin"))):
+                       claims: dict = Depends(require_permission("reports:read"))):
     report = await asyncio.to_thread(read_report, settings.audit_dir, date)
     if report is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"sem relatório para {date}")
@@ -462,7 +488,7 @@ DB_NODES = {
 
 
 @app.get("/admin/status")
-async def cluster_status(claims: dict = Depends(require_role("admin", "auditor"))):
+async def cluster_status(claims: dict = Depends(require_permission("system:status"))):
     """State of every node: services (HTTPS /health), databases (primary/replica,
     pending prepared transactions) and the NFS."""
     async def service(name: str, url: str):
@@ -499,3 +525,9 @@ async def cluster_status(claims: dict = Depends(require_role("admin", "auditor")
         nfs = {"up": False, "error": repr(exc)}
     return {"served_by": settings.instance_id, "services": services, "databases": databases, "nfs": nfs,
             "all_up": all(v["up"] for v in [*services.values(), *databases.values(), nfs])}
+
+
+# --- Administração, operações e auditoria (módulo admin.py) ----------------------------------
+from . import admin  # noqa: E402  (precisa das dependências definidas acima)
+
+app.include_router(admin.router)

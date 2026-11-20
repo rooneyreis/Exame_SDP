@@ -296,9 +296,9 @@ dca0276b-d89b-5c3d-ac71-3171e6284dc0GS-EU-00000001GS-AM-00000001000000000010000E
 | Perfil | Páginas |
 |---|---|
 | Cliente | Resumo (património, câmbio do dia, indicadores 30 dias, evolução do saldo, atividade recente), Contas e extrato (CSV), Transferir (nacional/internacional, estimativa de câmbio, revisão, resultado), Movimentos (filtros por estado/tipo/conta, pesquisa, CSV), Comprovativo imprimível com rastreio do processamento, Beneficiários, Perfil e segurança |
-| Operador | Abertura de contas (fila KYC, dados decifrados, aprovação com escolha de moeda), Contas de clientes (consulta por IBAN, depósitos e levantamentos) |
-| Auditor | Auditoria e conformidade (consistência entre regiões, cadeia de hashes por nó, relatório diário), consulta de contas e transações |
-| Admin | Infraestrutura (estado dos 10 nós), simulação de falhas, equipa (criar acessos), auditoria, KYC |
+| Operador | Painel de operações, Nova transferência (em nome do cliente, com validação e câmbio), Operações (pendentes/concluídas/rejeitadas), Histórico, Beneficiários de clientes, Contas e caixa, Abertura de contas (KYC), Limites |
+| Auditor | Painel de auditoria (consistência, integridade, alertas, falhas, volumes), Transferências com quem iniciou/aprovou, Pedidos e aprovações, Registos de auditoria e segurança, Conformidade, Contas, Beneficiários — tudo só leitura, exportação CSV/PDF |
+| Admin | Visão geral (volumes, saldos sob custódia, limites, equipa), Aprovações, Transferências, Contas (limites e bloqueio), Utilizadores e perfis, Beneficiários, Limites, Registos, Conformidade, Infraestrutura e simulação de falhas |
 
 - Estados técnicos traduzidos para linguagem bancária: `CONFIRMADA` → **Processada**, `ABORTADA` → **Falhada** (com o motivo explicado), restantes → **Pendente** (a página atualiza sozinha). Os eventos do 2PC aparecem no comprovativo como "Rastreio do processamento".
 - Sessão em `sessionStorage`; o access token é renovado automaticamente com o refresh token antes de expirar.
@@ -307,7 +307,47 @@ dca0276b-d89b-5c3d-ac71-3171e6284dc0GS-EU-00000001GS-AM-00000001000000000010000E
 - Segurança no browser: todo o conteúdo vindo da API é escapado antes de entrar no HTML; `Content-Security-Policy` sem scripts inline nem recursos externos, `frame-ancestors 'none'`, `nosniff`, `no-referrer`, HSTS.
 - Para abrir no Windows sem aviso de certificado, confiar na CA local (`infra/certs/ca.crt`) no repositório de certificados do utilizador.
 
-Limitação: o backend não tem endpoints de beneficiários nem de "transferências do utilizador". Os **beneficiários** e as referências das transferências **falhadas** enviadas pelo cliente ficam guardados no dispositivo (`localStorage`). As transferências processadas aparecem sempre, porque vêm dos movimentos das contas.
+Os beneficiários estão guardados no servidor (os que versões anteriores guardavam no browser são importados automaticamente). As referências das transferências **falhadas** enviadas pelo cliente continuam guardadas no dispositivo, porque o backend não tem um endpoint "as minhas transferências falhadas". As processadas aparecem sempre, porque vêm dos movimentos das contas.
+
+## Perfis de acesso e RBAC
+
+Quatro perfis, cada um com o seu painel. As permissões estão num único sítio, [`common/rbac.py`](common/rbac.py), e são **verificadas no backend em cada pedido** (`require_permission(...)` nos endpoints). O JWT só transporta o perfil, assinado pelo `auth`, e as permissões são derivadas no servidor. Esconder um botão nunca é a única proteção: uma chamada direta à API sem permissão recebe `403` e fica no registo de segurança (`ACESSO_NEGADO`, com utilizador, caminho e IP).
+
+| | Cliente | Operador | Auditor | Administrador |
+|---|:-:|:-:|:-:|:-:|
+| As próprias contas, transferências e beneficiários | ✔ | | | |
+| Registar transferências em nome de clientes | | ✔ | | |
+| Depósitos e levantamentos, abertura de contas (KYC) | | ✔ | | |
+| Gerir beneficiários de clientes | | ✔ | (ler) | ✔ |
+| Consultar todas as contas e transferências | | ✔ | ✔ | ✔ |
+| Aprovar / rejeitar pedidos de transferência | | | | ✔ |
+| Gerir utilizadores e perfis | | | | ✔ |
+| Configurar limites; bloquear contas e limites diários | | | | ✔ |
+| Registos de auditoria e segurança, consistência, alertas | | | ✔ | ✔ |
+| Volumes e relatórios financeiros, estado dos nós | | | ✔ | ✔ |
+
+O **auditor é só de leitura** por construção: o perfil não tem nenhuma permissão de escrita (teste `test_auditor_is_strictly_read_only`). O **administrador** aprova, mas não regista transferências nem mexe em caixa (segregação de funções).
+
+**Transferências registadas por operadores (maker-checker):**
+- Abaixo do limiar de aprovação, são executadas de imediato pelo 2PC.
+- A partir do limiar, ficam `PENDENTE_APROVACAO` até um administrador decidir. A transição é atómica (`UPDATE … WHERE status = 'PENDENTE_APROVACAO' AND created_by <> aprovador`), por isso quem registou nunca aprova e aprovar duas vezes não executa duas vezes (a `Idempotency-Key` deriva do pedido).
+- Cada transação regista `initiated_by`, `initiated_role` e `approved_by`, assinados pela api e gravados pelo coordenador.
+
+**Gestão de utilizadores (administrador):** criar, editar, mudar de perfil, bloquear, desbloquear (também limpa o bloqueio por tentativas falhadas), desativar e reativar. Regras no backend:
+- ninguém altera o próprio perfil ou estado;
+- clientes não passam a perfis de equipa;
+- não se remove o último administrador ativo;
+- mudar de perfil, bloquear ou desativar revoga as sessões (refresh tokens). O access token antigo expira em ≤ 15 min.
+
+**Limites configuráveis** (`settings`): o montante máximo por transferência, aplicado pela api **e pelo coordenador**, e o limiar de aprovação. São lidos da BD em cada operação, por isso uma alteração vale de imediato nas duas instâncias da api. O limite diário e o estado de cada conta também são editáveis.
+
+**Audit trail:** cada operação relevante fica no registo encadeado por SHA-256 no NFS, com identificador, responsável e perfil, ação, data/hora, `before`/`after`, resultado e IP. `GET /admin/audit/events` pesquisa e valida as cadeias. A BD não concede `DELETE` sobre transações nem pedidos à aplicação.
+
+**Fiscalização (`GET /admin/suspicious`):** regras explícitas sobre os registos reais. Valores ≥ 80 % do máximo, ≥ 5 transferências da mesma conta em 10 min, falhas repetidas, liquidações rejeitadas, operações de operador acima do limiar sem aprovação, estados intermédios antigos, e recuperações automáticas do 2PC.
+
+Endpoints novos: `/admin/users/{id}` (PATCH), `/admin/users/{id}/status`, `/admin/roles`, `/beneficiaries`, `/admin/beneficiaries`, `/transfer-requests` (+ `/approve`, `/reject`), `/admin/transfers`, `/admin/accounts` (+ PATCH), `/admin/settings`, `/admin/overview`, `/admin/suspicious`, `/admin/audit/events`.
+
+Migrações de esquema em `infra/postgres/migrations/` (aplicadas uma vez, por ordem, por `scripts/migrate.sh`, que o `seed.sh` chama). Matriz real contra a API: `./scripts/rbac-smoke.sh`.
 
 ## Cenários de demonstração
 
@@ -395,6 +435,7 @@ global-scale-system/
 │   ├── db.py                   # routing por região, conninfo multi-host, pools
 │   ├── audit.py                # auditoria no NFS com hash encadeado
 │   ├── reports.py              # relatório diário partilhado com fcntl.lockf
+│   ├── rbac.py                 # perfis -> permissões (verificadas em cada endpoint)
 │   ├── transfers.py            # tx_id = uuid5(utilizador:Idempotency-Key)
 │   └── logging.py              # logs JSON com request_id / tx_id
 ├── services/
@@ -410,7 +451,7 @@ global-scale-system/
 │   ├── certs/                  # gerado por gen-certs.sh (não versionado)
 │   └── keys/                   # gerado por gen-keys.sh (não versionado)
 ├── scripts/
-│   ├── gen-certs.sh, gen-keys.sh, seed.sh, failover.sh, test.sh, deploy.sh
+│   ├── gen-certs.sh, gen-keys.sh, seed.sh, migrate.sh, failover.sh, test.sh, deploy.sh, rbac-smoke.sh
 │   └── demo/                   # 13 cenários + run-all.sh + lib.sh + concurrency.py
 ├── tests/
 │   ├── unit/                   # lógica pura, sem Docker

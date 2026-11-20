@@ -14,19 +14,21 @@ import httpx
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from cryptography.hazmat.primitives import serialization
-from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from psycopg import errors
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from common.audit import AuditLog
 from common.crypto import decrypt_field, encrypt_field
-from common.jwt_auth import TokenValidator, auth_dependencies, issue_token, key_id, public_jwk
+from common.jwt_auth import TokenValidator, auth_dependencies, client_ip, issue_token, key_id, public_jwk
+from common.rbac import STAFF_ROLES, matrix
 from common.logging import add_request_logging, log_extra, setup_logging
 
 from . import validation
 from .config import settings
-from .schemas import ApproveKycRequest, LoginRequest, RefreshRequest, RegisterRequest, StaffRequest
+from .schemas import (AdminBeneficiaryIn, ApproveKycRequest, BeneficiaryIn, BeneficiaryUpdate, LoginRequest,
+                      RefreshRequest, RegisterRequest, StaffRequest, StatusChange, UserUpdate)
 
 log = setup_logging("auth")
 audit = AuditLog("auth")
@@ -38,7 +40,23 @@ KID = key_id(PUBLIC_KEY)
 DATA_KEY = settings.data_key.read_bytes()  # AES-256 key for data at rest (never stored in the DB)
 
 validator = TokenValidator(keys={KID: PUBLIC_KEY})  # auth validates its own tokens locally
-current_claims, require_role = auth_dependencies(validator)
+
+
+async def security_denied(claims: dict, permission: str, request: Request) -> None:
+    """Every refused attempt by an authenticated user goes to the tamper-evident audit log."""
+    log.warning(f"acesso negado: {claims.get('role')} -> {request.method} {request.url.path}")
+    await audit.write("ACESSO_NEGADO", actor=claims.get("sub"), actor_role=claims.get("role"),
+                      permission=permission, method=request.method, path=request.url.path,
+                      ip=client_ip(request), result="NEGADO")
+
+
+current_claims, require_role, require_permission = auth_dependencies(validator, on_denied=security_denied)
+
+
+async def record(action: str, claims: dict, request: Request, result: str = "OK", **fields) -> None:
+    """Audit-trail entry for an administrative/operational action."""
+    await audit.write(action, actor=claims.get("sub"), actor_role=claims.get("role"),
+                      ip=client_ip(request), result=result, **fields)
 
 # Argon2id with the library defaults (time_cost=3, memory_cost=64 MiB, parallelism=4).
 hasher = PasswordHasher()
@@ -143,7 +161,7 @@ async def register(body: RegisterRequest):
 
 
 @app.post("/auth/login")
-async def login(body: LoginRequest):
+async def login(body: LoginRequest, request: Request):
     now = now_utc()
     email = body.email.lower()
     error: tuple[int, str] | None = None
@@ -172,6 +190,8 @@ async def login(body: LoginRequest):
                     error = (status.HTTP_401_UNAUTHORIZED, "credenciais inválidas")
             elif user["status"] != "ATIVA":
                 error = (status.HTTP_403_FORBIDDEN, f"conta não ativa (estado: {user['status']})")
+            elif user["role"] not in ("cliente", *STAFF_ROLES):
+                error = (status.HTTP_403_FORBIDDEN, "perfil sem acesso interativo")
             else:
                 await conn.execute("UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE id = %s",
                                    (user["id"],))
@@ -180,10 +200,10 @@ async def login(body: LoginRequest):
 
     if error:
         event = "CONTA_BLOQUEADA" if error[0] == status.HTTP_423_LOCKED else "LOGIN_FALHOU"
-        await audit.write(event, email=email, reason=error[1])
+        await audit.write(event, email=email, reason=error[1], ip=client_ip(request), result="NEGADO")
         raise HTTPException(*error)
     log.info("login com sucesso", extra=log_extra(user_id=str(user["id"]), role=user["role"]))
-    await audit.write("LOGIN_OK", user_id=str(user["id"]), role=user["role"])
+    await audit.write("LOGIN_OK", actor=str(user["id"]), actor_role=user["role"], ip=client_ip(request), result="OK")
     return tokens
 
 
@@ -250,8 +270,8 @@ async def create_account_via_api(user_id: str, region: str, currency: str) -> di
 
 
 @app.post("/admin/users/{user_id}/approve-kyc")
-async def approve_kyc(user_id: uuid.UUID, body: ApproveKycRequest | None = None,
-                      claims: dict = Depends(require_role("operador"))):
+async def approve_kyc(user_id: uuid.UUID, request: Request, body: ApproveKycRequest | None = None,
+                      claims: dict = Depends(require_permission("kyc:approve"))):
     async with pool.connection() as conn:
         user = await (await conn.execute("SELECT * FROM users WHERE id = %s", (user_id,))).fetchone()
     if user is None:
@@ -271,30 +291,34 @@ async def approve_kyc(user_id: uuid.UUID, body: ApproveKycRequest | None = None,
         await conn.execute(
             "UPDATE users SET status = 'ATIVA' WHERE id = %s AND status = 'PENDENTE_VERIFICACAO'", (user_id,))
     log.info("KYC aprovado", extra=log_extra(user_id=str(user_id), operador=claims["sub"], iban=account.get("iban")))
-    await audit.write("KYC_APROVADO", user_id=str(user_id), iban=account.get("iban"), operador=claims["sub"])
+    await record("KYC_APROVADO", claims, request, target=str(user_id), iban=account.get("iban"),
+                 before={"status": "PENDENTE_VERIFICACAO"}, after={"status": "ATIVA", "currency": currency})
     return {"user_id": str(user_id), "status": "ATIVA", "account": account}
 
 
 @app.post("/admin/staff", status_code=status.HTTP_201_CREATED)
-async def create_staff(body: StaffRequest, claims: dict = Depends(require_role("admin"))):
+async def create_staff(body: StaffRequest, request: Request, claims: dict = Depends(require_permission("users:manage"))):
     user_id = uuid.uuid4()
     try:
         async with pool.connection() as conn:
             await conn.execute(
-                """INSERT INTO users (id, full_name, email, phone, password_hash, region, role, status)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, 'ATIVA')""",
+                """INSERT INTO users (id, full_name, email, phone, password_hash, region, role, status, created_by)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, 'ATIVA', %s)""",
                 (user_id, body.full_name, body.email, body.phone, await hash_password(body.password),
-                 body.region, body.role),
+                 body.region, body.role, claims["sub"]),
             )
     except errors.UniqueViolation:
+        await record("UTILIZADOR_CRIADO", claims, request, result="FALHOU", email=body.email, reason="duplicado")
         raise HTTPException(status.HTTP_409_CONFLICT, "email ou telefone já registado")
     log.info("staff criado", extra=log_extra(user_id=str(user_id), role=body.role, admin=claims["sub"]))
-    await audit.write("STAFF_CRIADO", user_id=str(user_id), role=body.role, admin=claims["sub"])
+    await record("UTILIZADOR_CRIADO", claims, request, target=str(user_id),
+                 after={"email": body.email, "role": body.role, "status": "ATIVA"})
     return {"id": str(user_id), "role": body.role, "status": "ATIVA"}
 
 
 def public_user(user: dict, with_sensitive: bool = False) -> dict:
-    out = {k: user[k] for k in ("id", "full_name", "email", "phone", "region", "role", "status", "created_at")}
+    out = {k: user.get(k) for k in ("id", "full_name", "email", "phone", "region", "role", "status", "created_at",
+                                    "updated_at", "failed_attempts", "locked_until", "created_by")}
     if with_sensitive:
         # Decrypted only here, for an authorised operator. In the DB they are AES-GCM ciphertext.
         aad = str(user["id"]).encode()
@@ -305,20 +329,237 @@ def public_user(user: dict, with_sensitive: bool = False) -> dict:
 
 @app.get("/admin/users")
 async def list_users(status_filter: str | None = Query(None, alias="status"),
-                     claims: dict = Depends(require_role("operador", "admin"))):
+                     role: str | None = None, q: str | None = Query(None, max_length=80),
+                     claims: dict = Depends(require_permission("users:read"))):
+    where, args = ["role <> 'service'"], []
+    if status_filter:
+        where.append("status = %s"); args.append(status_filter)
+    if role:
+        where.append("role = %s"); args.append(role)
+    if q:
+        where.append("(full_name ILIKE %s OR email ILIKE %s OR phone ILIKE %s)"); args += [f"%{q}%"] * 3
     async with pool.connection() as conn:
-        if status_filter:
-            rows = await (await conn.execute(
-                "SELECT * FROM users WHERE status = %s ORDER BY created_at", (status_filter,))).fetchall()
-        else:
-            rows = await (await conn.execute("SELECT * FROM users ORDER BY created_at")).fetchall()
+        rows = await (await conn.execute(
+            f"SELECT * FROM users WHERE {' AND '.join(where)} ORDER BY created_at", args)).fetchall()
     return [public_user(r) for r in rows]
 
 
 @app.get("/admin/users/{user_id}")
-async def get_user(user_id: uuid.UUID, claims: dict = Depends(require_role("operador", "admin"))):
+async def get_user(user_id: uuid.UUID, request: Request,
+                   claims: dict = Depends(require_permission("users:read:sensitive"))):
     async with pool.connection() as conn:
         user = await (await conn.execute("SELECT * FROM users WHERE id = %s", (user_id,))).fetchone()
     if user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "utilizador não encontrado")
+    # Consultar dados pessoais decifrados também fica registado.
+    await record("DADOS_PESSOAIS_CONSULTADOS", claims, request, target=str(user_id))
     return public_user(user, with_sensitive=True)
+
+
+# --- Administração de utilizadores (RBAC) ------------------------------------------------
+
+@app.get("/admin/roles")
+async def roles_matrix(claims: dict = Depends(require_permission("users:read"))):
+    """Perfis e permissões em vigor (a fonte é common/rbac.py, aplicada no backend)."""
+    return matrix()
+
+
+async def load_user(conn, user_id) -> dict:
+    user = await (await conn.execute("SELECT * FROM users WHERE id = %s FOR UPDATE", (user_id,))).fetchone()
+    if user is None or user["role"] == "service":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "utilizador não encontrado")
+    return user
+
+
+async def other_active_admins(conn, user_id) -> int:
+    row = await (await conn.execute(
+        "SELECT count(*) AS n FROM users WHERE role = 'admin' AND status = 'ATIVA' AND id <> %s", (user_id,))).fetchone()
+    return row["n"]
+
+
+@app.patch("/admin/users/{user_id}")
+async def update_user(user_id: uuid.UUID, body: UserUpdate, request: Request,
+                      claims: dict = Depends(require_permission("users:manage"))):
+    changes = body.model_dump(exclude_none=True)
+    if not changes:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "nada para alterar")
+    if "role" in changes and str(user_id) == claims["sub"]:
+        await record("PERFIL_ALTERADO", claims, request, result="NEGADO", target=str(user_id), reason="o próprio perfil")
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "não pode alterar o seu próprio perfil")
+    try:
+        async with pool.connection() as conn:
+            async with conn.transaction():
+                user = await load_user(conn, user_id)
+                if "role" in changes:
+                    if user["role"] not in STAFF_ROLES:
+                        raise HTTPException(status.HTTP_409_CONFLICT,
+                                            "o perfil de clientes não pode ser alterado (crie um acesso de equipa separado)")
+                    if user["role"] == "admin" and changes["role"] != "admin" and await other_active_admins(conn, user_id) == 0:
+                        raise HTTPException(status.HTTP_409_CONFLICT, "não é possível remover o último administrador ativo")
+                before = {k: user[k] for k in changes}
+                sets = ", ".join(f"{k} = %s" for k in changes)
+                await conn.execute(f"UPDATE users SET {sets}, updated_at = now() WHERE id = %s", [*changes.values(), user_id])
+                if "role" in changes and changes["role"] != user["role"]:
+                    # Sessões antigas terminam: o novo perfil vale a partir do próximo login.
+                    await conn.execute("UPDATE refresh_tokens SET revoked = true WHERE user_id = %s", (user_id,))
+    except errors.UniqueViolation:
+        raise HTTPException(status.HTTP_409_CONFLICT, "email ou telefone já registado")
+    action = "PERFIL_ALTERADO" if "role" in changes else "UTILIZADOR_EDITADO"
+    await record(action, claims, request, target=str(user_id), before=before, after=changes)
+    async with pool.connection() as conn:
+        return public_user(await (await conn.execute("SELECT * FROM users WHERE id = %s", (user_id,))).fetchone())
+
+
+TRANSITIONS = {   # action -> (estados de origem permitidos, novo estado)
+    "block": ({"ATIVA"}, "BLOQUEADA"),
+    "unblock": ({"BLOQUEADA", "ATIVA"}, "ATIVA"),          # também limpa o bloqueio por tentativas falhadas
+    "deactivate": ({"ATIVA", "BLOQUEADA", "PENDENTE_VERIFICACAO"}, "DESATIVADA"),
+    "reactivate": ({"DESATIVADA"}, "ATIVA"),
+}
+
+
+@app.post("/admin/users/{user_id}/status")
+async def change_status(user_id: uuid.UUID, body: StatusChange, request: Request,
+                        claims: dict = Depends(require_permission("users:manage"))):
+    if str(user_id) == claims["sub"]:
+        await record("ESTADO_ALTERADO", claims, request, result="NEGADO", target=str(user_id), reason="a própria conta")
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "não pode alterar o estado da sua própria conta")
+    allowed, new_status = TRANSITIONS[body.action]
+    async with pool.connection() as conn:
+        async with conn.transaction():
+            user = await load_user(conn, user_id)
+            if user["status"] not in allowed:
+                raise HTTPException(status.HTTP_409_CONFLICT, f"ação '{body.action}' inválida no estado {user['status']}")
+            if (user["role"] == "admin" and new_status != "ATIVA"
+                    and await other_active_admins(conn, user_id) == 0):
+                raise HTTPException(status.HTTP_409_CONFLICT, "não é possível bloquear o último administrador ativo")
+            await conn.execute(
+                "UPDATE users SET status = %s, updated_at = now(), "
+                "failed_attempts = CASE WHEN %s = 'ATIVA' THEN 0 ELSE failed_attempts END, "
+                "locked_until = CASE WHEN %s = 'ATIVA' THEN NULL ELSE locked_until END WHERE id = %s",
+                (new_status, new_status, new_status, user_id))
+            if new_status != "ATIVA":
+                await conn.execute("UPDATE refresh_tokens SET revoked = true WHERE user_id = %s", (user_id,))
+            updated = await (await conn.execute("SELECT * FROM users WHERE id = %s", (user_id,))).fetchone()
+    await record("ESTADO_ALTERADO", claims, request, target=str(user_id), reason=body.reason,
+                 before={"status": user["status"], "locked_until": user["locked_until"]},
+                 after={"status": new_status, "action": body.action})
+    return public_user(updated)
+
+
+# --- Beneficiários (guardados no servidor) --------------------------------------------------
+
+def beneficiary_out(b: dict) -> dict:
+    return {k: (str(v) if isinstance(v, uuid.UUID) else v) for k, v in b.items()}
+
+
+async def insert_beneficiary(owner_id, body, created_by) -> dict:
+    try:
+        async with pool.connection() as conn:
+            row = await (await conn.execute(
+                """INSERT INTO beneficiaries (id, owner_id, name, iban, nickname, favorite, created_by)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING *""",
+                (uuid.uuid4(), owner_id, body.name.strip(), body.iban, body.nickname, body.favorite, created_by))).fetchone()
+    except errors.UniqueViolation:
+        raise HTTPException(status.HTTP_409_CONFLICT, "este IBAN já está nos beneficiários")
+    return row
+
+
+@app.get("/beneficiaries")
+async def my_beneficiaries(claims: dict = Depends(require_permission("beneficiaries:manage:own"))):
+    async with pool.connection() as conn:
+        rows = await (await conn.execute(
+            "SELECT * FROM beneficiaries WHERE owner_id = %s ORDER BY favorite DESC, name", (claims["sub"],))).fetchall()
+    return [beneficiary_out(r) for r in rows]
+
+
+@app.post("/beneficiaries", status_code=status.HTTP_201_CREATED)
+async def add_my_beneficiary(body: BeneficiaryIn, request: Request,
+                             claims: dict = Depends(require_permission("beneficiaries:manage:own"))):
+    row = await insert_beneficiary(claims["sub"], body, claims["sub"])
+    await record("BENEFICIARIO_CRIADO", claims, request, target=str(row["id"]), after={"iban": body.iban, "name": body.name})
+    return beneficiary_out(row)
+
+
+async def update_beneficiary(bid, body, owner_filter=None) -> tuple[dict, dict]:
+    changes = body.model_dump(exclude_none=True)
+    if not changes:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "nada para alterar")
+    async with pool.connection() as conn:
+        async with conn.transaction():
+            old = await (await conn.execute("SELECT * FROM beneficiaries WHERE id = %s FOR UPDATE", (bid,))).fetchone()
+            if old is None or (owner_filter and str(old["owner_id"]) != owner_filter):
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "beneficiário não encontrado")
+            sets = ", ".join(f"{k} = %s" for k in changes)
+            new = await (await conn.execute(f"UPDATE beneficiaries SET {sets}, updated_at = now() WHERE id = %s RETURNING *",
+                                            [*changes.values(), bid])).fetchone()
+    return old, new
+
+
+async def delete_beneficiary(bid, owner_filter=None) -> dict:
+    async with pool.connection() as conn:
+        old = await (await conn.execute("SELECT * FROM beneficiaries WHERE id = %s", (bid,))).fetchone()
+        if old is None or (owner_filter and str(old["owner_id"]) != owner_filter):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "beneficiário não encontrado")
+        await conn.execute("DELETE FROM beneficiaries WHERE id = %s", (bid,))
+    return old
+
+
+@app.patch("/beneficiaries/{bid}")
+async def edit_my_beneficiary(bid: uuid.UUID, body: BeneficiaryUpdate, request: Request,
+                              claims: dict = Depends(require_permission("beneficiaries:manage:own"))):
+    old, new = await update_beneficiary(bid, body, owner_filter=claims["sub"])
+    await record("BENEFICIARIO_EDITADO", claims, request, target=str(bid),
+                 before={k: old[k] for k in body.model_dump(exclude_none=True)}, after=body.model_dump(exclude_none=True))
+    return beneficiary_out(new)
+
+
+@app.delete("/beneficiaries/{bid}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_my_beneficiary(bid: uuid.UUID, request: Request,
+                                claims: dict = Depends(require_permission("beneficiaries:manage:own"))):
+    old = await delete_beneficiary(bid, owner_filter=claims["sub"])
+    await record("BENEFICIARIO_REMOVIDO", claims, request, target=str(bid), before={"iban": old["iban"], "name": old["name"]})
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.get("/admin/beneficiaries")
+async def list_beneficiaries(owner_id: uuid.UUID | None = None,
+                             claims: dict = Depends(require_permission("beneficiaries:read:any"))):
+    async with pool.connection() as conn:
+        rows = await (await conn.execute(
+            """SELECT b.*, u.full_name AS owner_name, u.email AS owner_email FROM beneficiaries b
+               JOIN users u ON u.id = b.owner_id
+               WHERE (%s::uuid IS NULL OR b.owner_id = %s) ORDER BY u.full_name, b.name""",
+            (owner_id, owner_id))).fetchall()
+    return [beneficiary_out(r) for r in rows]
+
+
+@app.post("/admin/beneficiaries", status_code=status.HTTP_201_CREATED)
+async def add_beneficiary_for_client(body: AdminBeneficiaryIn, request: Request,
+                                     claims: dict = Depends(require_permission("beneficiaries:manage:any"))):
+    async with pool.connection() as conn:
+        owner = await (await conn.execute("SELECT role, status FROM users WHERE id = %s", (body.owner_id,))).fetchone()
+    if owner is None or owner["role"] != "cliente":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "cliente não encontrado")
+    row = await insert_beneficiary(body.owner_id, body, claims["sub"])
+    await record("BENEFICIARIO_CRIADO", claims, request, target=str(row["id"]), owner=str(body.owner_id),
+                 after={"iban": body.iban, "name": body.name})
+    return beneficiary_out(row)
+
+
+@app.patch("/admin/beneficiaries/{bid}")
+async def edit_beneficiary_for_client(bid: uuid.UUID, body: BeneficiaryUpdate, request: Request,
+                                      claims: dict = Depends(require_permission("beneficiaries:manage:any"))):
+    old, new = await update_beneficiary(bid, body)
+    await record("BENEFICIARIO_EDITADO", claims, request, target=str(bid), owner=str(old["owner_id"]),
+                 before={k: old[k] for k in body.model_dump(exclude_none=True)}, after=body.model_dump(exclude_none=True))
+    return beneficiary_out(new)
+
+
+@app.delete("/admin/beneficiaries/{bid}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_beneficiary_for_client(bid: uuid.UUID, request: Request,
+                                        claims: dict = Depends(require_permission("beneficiaries:manage:any"))):
+    old = await delete_beneficiary(bid)
+    await record("BENEFICIARIO_REMOVIDO", claims, request, target=str(bid), owner=str(old["owner_id"]),
+                 before={"iban": old["iban"], "name": old["name"]})
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

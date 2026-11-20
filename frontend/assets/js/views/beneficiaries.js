@@ -12,10 +12,10 @@ function editSheet(existing, onSave) {
       <div class="field"><label for="b-iban">IBAN</label><input class="input mono" id="b-iban" value="${esc(existing?.iban || "")}" placeholder="GS-EU-00000000" ${existing ? "readonly" : ""} spellcheck="false"></div>
       <div class="field"><label for="b-nick">Alcunha <span class="muted">(opcional)</span></label><input class="input" id="b-nick" value="${esc(existing?.nickname || "")}" placeholder="Ex.: Senhorio"></div>
       <label class="row" style="gap:10px;font-size:.88rem"><input type="checkbox" id="b-fav" ${existing?.favorite ? "checked" : ""} style="width:18px;height:18px;accent-color:var(--accent)"> Marcar como favorito</label>
-      <p class="hint">${icon("lock")} Os beneficiários ficam guardados apenas neste dispositivo.</p></div>`,
+      <p class="hint">${icon("lock")} Guardados na sua conta: disponíveis em qualquer dispositivo e ao balcão.</p></div>`,
     footer: `<button class="btn btn-secondary" data-close>Cancelar</button><button class="btn btn-primary" id="b-ok">Guardar</button>`,
   });
-  $("#b-ok", s.el).addEventListener("click", () => {
+  $("#b-ok", s.el).addEventListener("click", async () => {
     const name = $("#b-name", s.el).value.trim();
     const ib = $("#b-iban", s.el).value.trim().toUpperCase().replace(/\s/g, "").replace(/^GS-?(EU|AM)-?(\d{8})$/, "GS-$1-$2");
     let ok = true;
@@ -23,7 +23,11 @@ function editSheet(existing, onSave) {
     const validIban = /^GS-(EU|AM)-\d{8}$/.test(ib);
     fieldError($("#b-iban", s.el), validIban ? null : "IBAN inválido (GS-EU-######## ou GS-AM-########)"); ok &&= validIban;
     if (!ok) return;
-    beneficiaries.save({ ...(existing || {}), name, iban: ib, nickname: $("#b-nick", s.el).value.trim(), favorite: $("#b-fav", s.el).checked });
+    try {
+      await beneficiaries.save({ ...(existing || {}), name, iban: ib, nickname: $("#b-nick", s.el).value.trim(), favorite: $("#b-fav", s.el).checked });
+    } catch (ex) {
+      return fieldError($("#b-iban", s.el), ex.message);
+    }
     toast(existing ? "Beneficiário atualizado" : "Beneficiário adicionado");
     s.close();
     onSave();
@@ -31,6 +35,7 @@ function editSheet(existing, onSave) {
 }
 
 export async function render({ root }) {
+  await beneficiaries.load({ fresh: true });
   function draw() {
     const list = beneficiaries.all();
     root.innerHTML = `
@@ -56,7 +61,7 @@ export async function render({ root }) {
     $$("[data-del]", root).forEach((b) => b.addEventListener("click", async () => {
       const ben = beneficiaries.get(b.dataset.del);
       if (await confirmSheet({ title: "Remover beneficiário", message: `Remover ${esc(ben.name)} da sua lista? Pode voltar a adicioná-lo mais tarde.`, confirm: "Remover", danger: true })) {
-        beneficiaries.remove(ben.id);
+        await beneficiaries.remove(ben.id);
         toast("Beneficiário removido", "info");
         draw();
       }

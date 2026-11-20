@@ -5,7 +5,7 @@ import { $, $$, busy, esc, fieldError, sheet, toast } from "../ui.js";
 import { pageHead } from "./common.js";
 
 export async function render(ctx) {
-  if (ctx.path === "/ops/accounts") return accountsLookup(ctx);
+  if (ctx.path === "/ops/accounts") return accountsLookup(ctx);   // /ops/kyc -> abertura de contas
   return kyc(ctx);
 }
 

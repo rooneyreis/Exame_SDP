@@ -17,6 +17,17 @@ import * as profileView from "./views/profile.js";
 import * as opsView from "./views/ops.js";
 import * as auditView from "./views/audit.js";
 import * as adminView from "./views/admin.js";
+import * as adminHomeView from "./views/admin-home.js";
+import * as requestsView from "./views/requests.js";
+import * as transfersAllView from "./views/transfers-all.js";
+import * as accountsAdminView from "./views/accounts-admin.js";
+import * as usersView from "./views/users.js";
+import * as settingsView from "./views/settings.js";
+import * as beneficiariesAdminView from "./views/beneficiaries-admin.js";
+import * as auditEventsView from "./views/audit-events.js";
+import * as auditHomeView from "./views/audit-home.js";
+import * as opsHomeView from "./views/ops-home.js";
+import * as opsTransferView from "./views/ops-transfer.js";
 
 const CLIENT = ["cliente"];
 const STAFF = ["operador", "auditor", "admin"];
@@ -33,11 +44,29 @@ const ROUTES = [
   { path: "/accounts/:iban", view: accountsView, roles: ["cliente", "operador", "auditor"], title: "Conta" },
   { path: "/beneficiaries", view: beneficiariesView, roles: CLIENT, title: "Beneficiários" },
   { path: "/profile", view: profileView, roles: [...CLIENT, ...STAFF], title: "Perfil e segurança" },
-  { path: "/ops", view: opsView, roles: ["operador", "admin"], title: "Abertura de contas" },
-  { path: "/ops/accounts", view: opsView, roles: ["operador", "auditor"], title: "Contas de clientes" },
-  { path: "/audit", view: auditView, roles: ["auditor", "admin"], title: "Auditoria e conformidade" },
-  { path: "/admin", view: adminView, roles: ["admin"], title: "Infraestrutura" },
-  { path: "/admin/staff", view: adminView, roles: ["admin"], title: "Equipa" },
+  // Operador
+  { path: "/ops", view: opsHomeView, roles: ["operador"], title: "Painel de operações" },
+  { path: "/ops/transfer", view: opsTransferView, roles: ["operador"], title: "Nova transferência" },
+  { path: "/ops/requests", view: requestsView, roles: ["operador"], title: "Operações" },
+  { path: "/ops/kyc", view: opsView, roles: ["operador", "admin"], title: "Abertura de contas" },
+  { path: "/ops/accounts", view: opsView, roles: ["operador", "auditor"], title: "Contas e caixa" },
+  { path: "/ops/beneficiaries", view: beneficiariesAdminView, roles: ["operador"], title: "Beneficiários de clientes" },
+  // Auditor
+  { path: "/audit", view: auditHomeView, roles: ["auditor"], title: "Painel de auditoria" },
+  { path: "/audit/events", view: auditEventsView, roles: ["auditor", "admin"], title: "Registos de auditoria" },
+  { path: "/audit/compliance", view: auditView, roles: ["auditor", "admin"], title: "Conformidade" },
+  { path: "/audit/requests", view: requestsView, roles: ["auditor"], title: "Pedidos e aprovações" },
+  { path: "/audit/beneficiaries", view: beneficiariesAdminView, roles: ["auditor"], title: "Beneficiários" },
+  // Administrador
+  { path: "/admin", view: adminHomeView, roles: ["admin"], title: "Visão geral" },
+  { path: "/admin/approvals", view: requestsView, roles: ["admin"], title: "Aprovações" },
+  { path: "/admin/users", view: usersView, roles: ["admin"], title: "Utilizadores e perfis" },
+  { path: "/admin/settings", view: settingsView, roles: ["admin", "auditor", "operador"], title: "Limites" },
+  { path: "/admin/beneficiaries", view: beneficiariesAdminView, roles: ["admin"], title: "Beneficiários" },
+  { path: "/admin/infra", view: adminView, roles: ["admin"], title: "Infraestrutura" },
+  // Partilhadas (o backend decide o que cada perfil pode fazer em cada uma)
+  { path: "/admin/transfers", view: transfersAllView, roles: STAFF, title: "Transferências" },
+  { path: "/admin/accounts", view: accountsAdminView, roles: ["admin", "auditor"], title: "Contas" },
 ];
 
 const NAV = {
@@ -52,25 +81,52 @@ const NAV = {
     { group: "Conta", items: [{ to: "/profile", icon: "shield", label: "Perfil e segurança" }] },
   ],
   operador: [
-    { group: "Operações", items: [
-      { to: "/ops", icon: "users", label: "Abertura de contas" },
-      { to: "/ops/accounts", icon: "wallet", label: "Contas de clientes" },
+    { group: "Transferências", items: [
+      { to: "/ops", icon: "home", label: "Painel" },
+      { to: "/ops/transfer", icon: "plus", label: "Nova transferência" },
+      { to: "/ops/requests", icon: "clock", label: "Operações" },
+      { to: "/admin/transfers", icon: "history", label: "Histórico" },
+    ] },
+    { group: "Clientes", items: [
+      { to: "/ops/beneficiaries", icon: "users", label: "Beneficiários" },
+      { to: "/ops/accounts", icon: "wallet", label: "Contas e caixa" },
+      { to: "/ops/kyc", icon: "check", label: "Abertura de contas" },
+      { to: "/admin/settings", icon: "info", label: "Limites" },
     ] },
     { group: "Conta", items: [{ to: "/profile", icon: "shield", label: "Perfil e segurança" }] },
   ],
   auditor: [
-    { group: "Conformidade", items: [
-      { to: "/audit", icon: "shield", label: "Auditoria" },
-      { to: "/ops/accounts", icon: "wallet", label: "Contas de clientes" },
+    { group: "Fiscalização", items: [
+      { to: "/audit", icon: "home", label: "Painel" },
+      { to: "/admin/transfers", icon: "transfer", label: "Transferências" },
+      { to: "/audit/requests", icon: "clock", label: "Aprovações" },
+      { to: "/audit/events", icon: "doc", label: "Registos" },
+      { to: "/audit/compliance", icon: "shield", label: "Conformidade" },
+    ] },
+    { group: "Consulta", items: [
+      { to: "/admin/accounts", icon: "wallet", label: "Contas" },
+      { to: "/audit/beneficiaries", icon: "users", label: "Beneficiários" },
+      { to: "/admin/settings", icon: "info", label: "Limites" },
     ] },
     { group: "Conta", items: [{ to: "/profile", icon: "user", label: "Perfil e segurança" }] },
   ],
   admin: [
-    { group: "Administração", items: [
-      { to: "/admin", icon: "server", label: "Infraestrutura" },
-      { to: "/audit", icon: "shield", label: "Auditoria" },
-      { to: "/ops", icon: "users", label: "Abertura de contas" },
-      { to: "/admin/staff", icon: "key", label: "Equipa" },
+    { group: "Instituição", items: [
+      { to: "/admin", icon: "home", label: "Visão geral" },
+      { to: "/admin/approvals", icon: "check", label: "Aprovações" },
+      { to: "/admin/transfers", icon: "transfer", label: "Transferências" },
+      { to: "/admin/accounts", icon: "wallet", label: "Contas" },
+    ] },
+    { group: "Gestão", items: [
+      { to: "/admin/users", icon: "users", label: "Utilizadores" },
+      { to: "/admin/beneficiaries", icon: "star", label: "Beneficiários" },
+      { to: "/admin/settings", icon: "settings", label: "Limites" },
+      { to: "/ops/kyc", icon: "key", label: "Abertura de contas" },
+    ] },
+    { group: "Supervisão", items: [
+      { to: "/audit/events", icon: "doc", label: "Registos" },
+      { to: "/audit/compliance", icon: "shield", label: "Conformidade" },
+      { to: "/admin/infra", icon: "server", label: "Infraestrutura" },
     ] },
     { group: "Conta", items: [{ to: "/profile", icon: "user", label: "Perfil e segurança" }] },
   ],
@@ -212,7 +268,7 @@ async function render() {
   }
   closeMenu();
   $$("[data-nav]").forEach((a) => {
-    const active = path === a.dataset.nav || (a.dataset.nav !== "/admin" && a.dataset.nav !== "/ops" && path.startsWith(a.dataset.nav + "/"));
+    const active = path === a.dataset.nav || (!["/admin", "/ops", "/audit"].includes(a.dataset.nav) && path.startsWith(a.dataset.nav + "/"));
     if (active) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   });
   $("#crumb").textContent = route.title;

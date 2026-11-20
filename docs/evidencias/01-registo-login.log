@@ -1,19 +1,19 @@
 
 ══════ Cenário 01 — Registo, KYC, conta no shard certo e login ══════
-(2026-11-20T00:06:51Z)
+(2026-11-20T02:06:16Z)
 
 ▶ 1. Registo de um cliente da Europa e de um cliente da América
   POST /auth/register -> HTTP 201
   ✔ cliente EU registado (HTTP 201)
     {
-      "id": "3c268734-615f-4fce-b9e9-07b4b469d659",
+      "id": "2c87f087-90f7-46db-bf42-690ea0dad367",
       "status": "PENDENTE_VERIFICACAO",
       "region": "EU"
     }
   POST /auth/register -> HTTP 201
   ✔ cliente AM registado (HTTP 201)
     {
-      "id": "37f240ac-e9e8-4698-b849-1d8c93dfde35",
+      "id": "f763667d-29f7-4b17-9a5e-e36a19cfb022",
       "status": "PENDENTE_VERIFICACAO",
       "region": "AM"
     }
@@ -24,65 +24,65 @@
     "conta não ativa (estado: PENDENTE_VERIFICACAO)"
 
 ▶ 3. Na BD, o documento de identificação está cifrado (AES-256-GCM)
-  $ psql "host=pg-core.global.local dbname=auth" -c "SELECT email, status, encode(substr(document_id_enc,1,24),'hex') AS document_id_enc FROM users WHERE id = '3c268734-615f-4fce-b9e9-07b4b469d659'"
+  $ psql "host=pg-core.global.local dbname=auth" -c "SELECT email, status, encode(substr(document_id_enc,1,24),'hex') AS document_id_enc FROM users WHERE id = '2c87f087-90f7-46db-bf42-690ea0dad367'"
                email            |        status        |                 document_id_enc                  
     ----------------------------+----------------------+--------------------------------------------------
-     maria.1795133211@demo.test | PENDENTE_VERIFICACAO | 635da011e5805b026a00b3cf6389281cf724c83e597139c8
+     maria.1795140376@demo.test | PENDENTE_VERIFICACAO | e764609c577486bcf1ba4f2f62cc894c141653f0b1455259
     (1 row)
     
 
 ▶ 4. O operador aprova o KYC dos dois clientes
   POST /auth/login -> HTTP 200
   GET /admin/users?status=PENDENTE_VERIFICACAO -> HTTP 200
-  pendentes: teste.0d8aee23@cliente.test, teste.d0865a76@cliente.test, teste.e9d87a89@cliente.test, teste.f2d6c999@cliente.test, teste.dbe8dada@cliente.test, teste.e422a637@cliente.test, teste.729e84e5@cliente.test, teste.5d492c1b@cliente.test, teste.ac5f36c9@cliente.test, teste.e480444d@cliente.test, teste.389ddebb@cliente.test, teste.b547f2f6@cliente.test, teste.517bad7c@cliente.test, teste.f316f015@cliente.test, teste.302c02f6@cliente.test, teste.e461dc44@cliente.test, teste.638488df@cliente.test, teste.4d529723@cliente.test, teste.72754da7@cliente.test, teste.89a1775c@cliente.test, teste.14ab935d@cliente.test, teste.fa557f4b@cliente.test, teste.2e5e5b03@cliente.test, teste.e83045af@cliente.test, teste.c7ee6dec@cliente.test, teste.7b607e97@cliente.test, teste.c7d55715@cliente.test, teste.a36128da@cliente.test, teste.3d9c428f@cliente.test, teste.22780370@cliente.test, maria.1795133211@demo.test, john.1795133211@demo.test
-  POST /admin/users/3c268734-615f-4fce-b9e9-07b4b469d659/approve-kyc -> HTTP 200
+  pendentes: teste.a7fd254a@cliente.test, teste.f228c3e4@cliente.test, teste.3326510b@cliente.test, teste.5d28f6cc@cliente.test, teste.05a2e95c@cliente.test, teste.5b1fe85e@cliente.test, teste.7f8c0faa@cliente.test, teste.6d174e42@cliente.test, teste.98e97f45@cliente.test, teste.f055eab4@cliente.test, teste.234ca3df@cliente.test, teste.fa7d593b@cliente.test, maria.1795140376@demo.test, john.1795140376@demo.test
+  POST /admin/users/2c87f087-90f7-46db-bf42-690ea0dad367/approve-kyc -> HTTP 200
   ✔ KYC EU aprovado (HTTP 200)
     {
-      "iban": "GS-EU-00000041",
-      "user_id": "3c268734-615f-4fce-b9e9-07b4b469d659",
+      "iban": "GS-EU-00000004",
+      "user_id": "2c87f087-90f7-46db-bf42-690ea0dad367",
       "region": "EU",
       "currency": "EUR",
       "balance": "0.00",
       "status": "ATIVA",
       "daily_limit": "50000.00",
-      "created_at": "2026-11-20T00:06:53.056629+00:00",
+      "created_at": "2026-11-20T02:06:17.995391+00:00",
       "created": true
     }
-  POST /admin/users/37f240ac-e9e8-4698-b849-1d8c93dfde35/approve-kyc -> HTTP 200
+  POST /admin/users/f763667d-29f7-4b17-9a5e-e36a19cfb022/approve-kyc -> HTTP 200
   ✔ KYC AM aprovado (HTTP 200)
     {
-      "iban": "GS-AM-00000174",
-      "user_id": "37f240ac-e9e8-4698-b849-1d8c93dfde35",
+      "iban": "GS-AM-00000038",
+      "user_id": "f763667d-29f7-4b17-9a5e-e36a19cfb022",
       "region": "AM",
       "currency": "USD",
       "balance": "0.00",
       "status": "ATIVA",
       "daily_limit": "50000.00",
-      "created_at": "2026-11-20T00:06:53.122063+00:00",
+      "created_at": "2026-11-20T02:06:18.062614+00:00",
       "created": true
     }
 
 ▶ 5. Consulta direta a cada shard: cada conta só existe no nó da sua região
   pg-europa:
-  $ psql "host=pg-europa.global.local,pg-europa-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT iban, currency, balance FROM accounts WHERE user_id IN ('3c268734-615f-4fce-b9e9-07b4b469d659','37f240ac-e9e8-4698-b849-1d8c93dfde35')"
+  $ psql "host=pg-europa.global.local,pg-europa-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT iban, currency, balance FROM accounts WHERE user_id IN ('2c87f087-90f7-46db-bf42-690ea0dad367','f763667d-29f7-4b17-9a5e-e36a19cfb022')"
           iban      | currency | balance 
     ----------------+----------+---------
-     GS-EU-00000041 | EUR      |    0.00
+     GS-EU-00000004 | EUR      |    0.00
     (1 row)
     
   pg-america:
-  $ psql "host=pg-america.global.local,pg-america-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT iban, currency, balance FROM accounts WHERE user_id IN ('3c268734-615f-4fce-b9e9-07b4b469d659','37f240ac-e9e8-4698-b849-1d8c93dfde35')"
+  $ psql "host=pg-america.global.local,pg-america-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT iban, currency, balance FROM accounts WHERE user_id IN ('2c87f087-90f7-46db-bf42-690ea0dad367','f763667d-29f7-4b17-9a5e-e36a19cfb022')"
           iban      | currency | balance 
     ----------------+----------+---------
-     GS-AM-00000174 | USD      |    0.00
+     GS-AM-00000038 | USD      |    0.00
     (1 row)
     
-  ✔ GS-EU-00000041 só no pg-europa, GS-AM-00000174 só no pg-america
+  ✔ GS-EU-00000004 só no pg-europa, GS-AM-00000038 só no pg-america
   a réplica também a tem (replicação streaming):
-  $ psql "host=pg-europa-replica.global.local dbname=bank" -c "SELECT iban, pg_is_in_recovery() AS replica FROM accounts WHERE iban = 'GS-EU-00000041'"
+  $ psql "host=pg-europa-replica.global.local dbname=bank" -c "SELECT iban, pg_is_in_recovery() AS replica FROM accounts WHERE iban = 'GS-EU-00000004'"
           iban      | replica 
     ----------------+---------
-     GS-EU-00000041 | t
+     GS-EU-00000004 | t
     (1 row)
     
 
@@ -92,26 +92,26 @@
   header: {"alg":"RS256","kid":"7OvHvs650CnDr6UsgnvvdLPI9UA3HDC_3ko6Xw4WsPg","typ":"JWT"}
   claims:
     {
-      "sub": "3c268734-615f-4fce-b9e9-07b4b469d659",
+      "sub": "2c87f087-90f7-46db-bf42-690ea0dad367",
       "role": "cliente",
       "region": "EU",
       "iss": "auth.global.local",
       "aud": "global-scale",
-      "iat": 1795133218,
-      "exp": 1795134118,
-      "jti": "94cd96da-83a8-4d84-952b-af6ef0baffdc"
+      "iat": 1795140384,
+      "exp": 1795141284,
+      "jti": "721f1031-0aba-499c-8489-f680914dfba1"
     }
 
 ▶ 7. GET /me — validado localmente pela api com a chave pública (JWKS)
-  GET /me -> HTTP 200 (X-Served-By: api-1)
+  GET /me -> HTTP 200 (X-Served-By: api-2)
   ✔ dados do token e contas (HTTP 200)
     {
-      "user_id": "3c268734-615f-4fce-b9e9-07b4b469d659",
+      "user_id": "2c87f087-90f7-46db-bf42-690ea0dad367",
       "role": "cliente",
       "region": "EU",
       "accounts": [
         {
-          "iban": "GS-EU-00000041",
+          "iban": "GS-EU-00000004",
           "currency": "EUR",
           "balance": "0.00"
         }
@@ -119,4 +119,4 @@
     }
 
 ══════ Cenário 01 concluído ══════
-(2026-11-20T00:06:58Z)
+(2026-11-20T02:06:24Z)

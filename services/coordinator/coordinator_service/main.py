@@ -90,6 +90,25 @@ app = FastAPI(title="Global-Scale 2PC coordinator", lifespan=lifespan)
 add_request_logging(app, log)
 
 
+# --- limits configured by the administrator (settings table) -------------------------
+
+_limit_cache = {"at": 0.0, "value": logic.MAX_AMOUNT}
+
+
+async def max_transfer_amount() -> Decimal:
+    """Authoritative maximum per transfer (the api also checks it, but the coordinator decides)."""
+    if time.monotonic() - _limit_cache["at"] > 0.5:   # practically fresh: an admin change applies at once
+        try:
+            async with core.connection() as conn:
+                row = await (await conn.execute("SELECT value FROM settings WHERE key = 'max_transfer_amount'")).fetchone()
+            if row:
+                _limit_cache["value"] = row["value"]
+            _limit_cache["at"] = time.monotonic()
+        except Exception as exc:  # settings table missing (old schema): keep the last known value
+            log.warning(f"limites indisponíveis, a usar {_limit_cache['value']}: {exc!r}")
+    return _limit_cache["value"]
+
+
 # --- durable log ---------------------------------------------------------------------
 
 async def event(tx_id, name: str, **detail) -> None:
@@ -316,7 +335,8 @@ async def submit(request: Request):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"pedido rejeitado: {reason}")
 
     payload = json.loads(body)
-    if problem := logic.payload_problem(payload, logic.utcnow()):
+    max_amount = await max_transfer_amount()
+    if problem := logic.payload_problem(payload, logic.utcnow(), max_amount):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, problem)
     tx_id_var.set(payload["tx_id"])
 
@@ -364,6 +384,11 @@ async def process_transfer(payload: dict, headers) -> JSONResponse:
         "from_currency": src["currency"], "to_currency": dst["currency"],
         "fx_rate": rate, "converted_amount": logic.convert(amount, rate),
         "kind": logic.transfer_kind(from_region, to_region),
+        # Rastreabilidade: quem submeteu a ordem e quem a aprovou (assinado pela api).
+        "initiated_by": payload.get("initiated_by") or payload["user_id"],
+        "initiated_role": payload.get("initiated_role") or "cliente",
+        "approved_by": payload.get("approved_by"),
+        "request_id": payload.get("request_id"),
     }
 
     in_flight.add(payload["tx_id"])
@@ -373,17 +398,19 @@ async def process_transfer(payload: dict, headers) -> JSONResponse:
             inserted = await (await conn.execute(
                 """INSERT INTO transactions (tx_id, idempotency_key, user_id, from_iban, to_iban, from_region,
                        to_region, amount, from_currency, to_currency, fx_rate, converted_amount, kind, state,
-                       request_signature, request_sha256)
+                       request_signature, request_sha256, initiated_by, initiated_role, approved_by, request_id)
                    VALUES (%(tx_id)s, %(idempotency_key)s, %(user_id)s, %(from_iban)s, %(to_iban)s, %(from_region)s,
                        %(to_region)s, %(amount)s, %(from_currency)s, %(to_currency)s, %(fx_rate)s,
-                       %(converted_amount)s, %(kind)s, 'INICIADA', %(sig)s, %(sha)s)
+                       %(converted_amount)s, %(kind)s, 'INICIADA', %(sig)s, %(sha)s, %(initiated_by)s,
+                       %(initiated_role)s, %(approved_by)s, %(request_id)s)
                    ON CONFLICT DO NOTHING RETURNING tx_id""",
                 {**tx, "sig": headers.get("x-signature"), "sha": headers.get("x-payload-sha256")})).fetchone()
         if inserted is None:  # the same request arrived twice at the same time
             return response_for(await tx_view(tx["tx_id"]), replay=True)
         await event(tx["tx_id"], "INICIADA", kind=tx["kind"], amount=str(amount), from_currency=tx["from_currency"],
                     to_currency=tx["to_currency"], fx_rate=str(rate), converted=str(tx["converted_amount"]),
-                    signer=headers.get("x-signer"))
+                    signer=headers.get("x-signer"), initiated_by=tx["initiated_by"], initiated_role=tx["initiated_role"],
+                    approved_by=tx["approved_by"])
 
         if tx["kind"] == "LOCAL":
             await run_local(tx)
@@ -396,6 +423,8 @@ async def process_transfer(payload: dict, headers) -> JSONResponse:
     if view["settlement_status"] == "PENDENTE":
         start_settlement(payload["tx_id"])     # asynchronous: the client does not wait for it
     await audit.write("TRANSFERENCIA", tx_id=payload["tx_id"], kind=tx["kind"], state=view["state"],
+                      actor=tx["initiated_by"], actor_role=tx["initiated_role"], approved_by=tx["approved_by"],
+                      result="OK" if view["state"] == "CONFIRMADA" else view["state"],
                       from_iban=tx["from_iban"], to_iban=tx["to_iban"], amount=str(amount),
                       currency=tx["from_currency"], reason=view.get("failure_reason"))
     return response_for(view)

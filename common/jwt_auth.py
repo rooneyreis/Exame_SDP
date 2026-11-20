@@ -15,7 +15,7 @@ import uuid
 import httpx
 import jwt
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 ISSUER = "auth.global.local"
@@ -124,8 +124,18 @@ class TokenValidator:
             await asyncio.sleep(self.refresh_seconds if ok or self._keys else 2)
 
 
-def auth_dependencies(validator: TokenValidator):
-    """Builds the FastAPI dependencies current_claims and require_role(*roles)."""
+def client_ip(request: Request) -> str | None:
+    """Real client IP. nginx sets X-Forwarded-For and Uvicorn (--proxy-headers, trusting only
+    nginx's IP) puts it in request.client, so it cannot be spoofed by the client."""
+    return request.client.host if request.client else None
+
+
+def auth_dependencies(validator: TokenValidator, on_denied=None):
+    """Builds the FastAPI dependencies current_claims, require_role(*roles) and
+    require_permission(permission). on_denied(claims, permission, request) is awaited
+    whenever an authenticated user is refused (security log)."""
+    from .rbac import has_permission  # local import keeps the module light for unit tests
+
     bearer = HTTPBearer(auto_error=False)
 
     async def current_claims(creds: HTTPAuthorizationCredentials | None = Depends(bearer)) -> dict:
@@ -139,10 +149,22 @@ def auth_dependencies(validator: TokenValidator):
                                 headers={"WWW-Authenticate": "Bearer"}) from exc
 
     def require_role(*roles: str):
-        async def check(claims: dict = Depends(current_claims)) -> dict:
+        async def check(request: Request, claims: dict = Depends(current_claims)) -> dict:
             if claims.get("role") not in roles:
+                if on_denied:
+                    await on_denied(claims, f"role:{'|'.join(roles)}", request)
                 raise HTTPException(status.HTTP_403_FORBIDDEN, f"requer role: {', '.join(roles)}")
             return claims
         return check
 
-    return current_claims, require_role
+    def require_permission(*permissions: str):
+        """Passes if the caller's role has ANY of the given permissions (checked server-side)."""
+        async def check(request: Request, claims: dict = Depends(current_claims)) -> dict:
+            if not any(has_permission(claims.get("role"), p) for p in permissions):
+                if on_denied:
+                    await on_denied(claims, "|".join(permissions), request)
+                raise HTTPException(status.HTTP_403_FORBIDDEN, f"sem permissão: {' ou '.join(permissions)}")
+            return claims
+        return check
+
+    return current_claims, require_role, require_permission

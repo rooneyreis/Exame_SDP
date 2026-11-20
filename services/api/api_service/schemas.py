@@ -16,7 +16,8 @@ class CashOperation(BaseModel):
 class TransferRequest(BaseModel):
     from_iban: str
     to_iban: str
-    amount: Annotated[Decimal, Field(gt=0, le=Decimal("10000.00"), max_digits=18, decimal_places=2)]
+    # O máximo é configurável pelo administrador (tabela settings): validado no endpoint e no coordenador.
+    amount: Annotated[Decimal, Field(gt=0, le=Decimal("1000000.00"), max_digits=18, decimal_places=2)]
 
 
 class ChaosRequest(BaseModel):
@@ -32,3 +33,26 @@ class CreateAccountRequest(BaseModel):
     user_id: uuid.UUID
     region: Literal["EU", "AM"]
     currency: Literal["EUR", "USD", "MZN"]
+
+
+class TransferRequestIn(BaseModel):
+    """Transferência registada por um operador em nome de um cliente."""
+    from_iban: str = Field(pattern=r"^GS-(EU|AM)-[0-9]{8}$")
+    to_iban: str = Field(pattern=r"^GS-(EU|AM)-[0-9]{8}$")
+    amount: Annotated[Decimal, Field(gt=0, le=Decimal("1000000.00"), max_digits=18, decimal_places=2)]
+    beneficiary_name: str | None = Field(default=None, max_length=120)
+    description: str | None = Field(default=None, max_length=140)
+
+
+class Decision(BaseModel):
+    reason: str | None = Field(default=None, max_length=200)
+
+
+class AccountUpdate(BaseModel):
+    daily_limit: Annotated[Decimal, Field(gt=0, le=Decimal("10000000.00"), max_digits=18, decimal_places=2)] | None = None
+    status: Literal["ATIVA", "BLOQUEADA"] | None = None
+
+
+class SettingsUpdate(BaseModel):
+    max_transfer_amount: Annotated[Decimal, Field(gt=0, le=Decimal("1000000.00"), decimal_places=2)] | None = None
+    approval_threshold: Annotated[Decimal, Field(gt=0, le=Decimal("1000000.00"), decimal_places=2)] | None = None

@@ -1,51 +1,51 @@
 
 ══════ Cenário 10 — Crash do coordenador depois da decisão ══════
-(2026-11-20T00:09:03Z)
-  saldos antes: GS-AM-00000001=10961.71 USD   GS-EU-00000002=4618.80 EUR
+(2026-11-20T02:08:32Z)
+  saldos antes: GS-AM-00000001=16299.77 USD   GS-EU-00000002=4763.02 EUR
 
 ▶ 1. Ativar crash_after_decision
-  POST /admin/chaos -> HTTP 200 (X-Served-By: api-2)
+  POST /admin/chaos -> HTTP 200 (X-Served-By: api-1)
   chaos no coordenador: {"pause_before_prepare":0,"pause_after_prepare":0,"crash_after_prepare":false,"crash_after_decision":true,"fail_participant":null}
 
 ▶ 2. O David transfere 50.00 USD para o Bruno — o coordenador morre a meio
   POST /auth/login -> HTTP 200
-  POST /transfers -> HTTP 503 (X-Served-By: api-1)
+  POST /transfers -> HTTP 503 (X-Served-By: api-2)
     {
       "detail": "coordenador indisponível: repita o pedido com a mesma Idempotency-Key",
-      "tx_id": "bb7d313a-da74-5db0-a623-5369da144119"
+      "tx_id": "1655cd27-1ae9-5322-8f55-fb4326bd3657"
     }
-  ✔ a api respondeu 503 mas devolveu o tx_id (bb7d313a-da74-5db0-a623-5369da144119)
+  ✔ a api respondeu 503 mas devolveu o tx_id (1655cd27-1ae9-5322-8f55-fb4326bd3657)
   logs do coordenador antes de morrer:
     [DECISAO_COMMIT]
     CHAOS: crash depois da DECISAO_COMMIT, antes dos COMMIT PREPARED
   transações preparadas à espera de decisão:
-  pg-europa: 1_YmI3ZDMxM2EtZGE3NC01ZGIwLWE2MjMtNTM2OWRhMTQ0MTE5_RVU=  (preparada às 00:09:03)
-  pg-america: 1_YmI3ZDMxM2EtZGE3NC01ZGIwLWE2MjMtNTM2OWRhMTQ0MTE5_QU0=  (preparada às 00:09:03)
+  pg-europa: 1_MTY1NWNkMjctMWFlOS01MzIyLThmNTUtZmI0MzI2YmQzNjU3_RVU=  (preparada às 02:08:35)
+  pg-america: 1_MTY1NWNkMjctMWFlOS01MzIyLThmNTUtZmI0MzI2YmQzNjU3_QU0=  (preparada às 02:08:35)
 
 ▶ 3. O Docker reinicia o coordenador sozinho
   ✔ RestartCount: 2 → 3
   ✔ coordinator está healthy
 
 ▶ 4. O recovery loop encontra DECISAO_COMMIT no log e conclui a transação
-    00:09:03.830  INICIADA   {"kind":"DISTRIBUIDA","amount":"50.00","signer":"api-1","fx_rate":"0.92592593","converted":"46.30","to_currency":"EUR","from_currency":"USD"}
-    00:09:03.834  PREPARANDO
-    00:09:03.852  PREPARADO_EU   {"iban":"GS-EU-00000002","side":"CREDITO"}
-    00:09:03.871  PREPARADO_AM   {"iban":"GS-AM-00000001","side":"DEBITO"}
-    00:09:03.878  DECISAO_COMMIT
-    00:09:04.812  RECUPERACAO_COMMIT_EU
-    00:09:04.817  RECUPERACAO_COMMIT_AM
-    00:09:04.822  CONFIRMADA   {"recovered":true}
+    02:08:35.468  INICIADA   {"kind":"DISTRIBUIDA","amount":"50.00","signer":"api-2","fx_rate":"0.92592593","converted":"46.30","approved_by":null,"to_currency":"EUR","initiated_by":"22222222-0000-4000-8000-000000000001","from_currency":"USD","initiated_role":"cliente"}
+    02:08:35.475  PREPARANDO
+    02:08:35.498  PREPARADO_EU   {"iban":"GS-EU-00000002","side":"CREDITO"}
+    02:08:35.528  PREPARADO_AM   {"iban":"GS-AM-00000001","side":"DEBITO"}
+    02:08:35.535  DECISAO_COMMIT
+    02:08:36.480  RECUPERACAO_COMMIT_EU
+    02:08:36.485  RECUPERACAO_COMMIT_AM
+    02:08:36.491  CONFIRMADA   {"recovered":true}
   ✔ CONFIRMADA pela recuperação (RECUPERACAO_COMMIT_*)
 
 ▶ 5. O cliente repete o pedido com a mesma Idempotency-Key: não há segundo débito
-  POST /transfers -> HTTP 200 (X-Served-By: api-1)
+  POST /transfers -> HTTP 200 (X-Served-By: api-2)
   HTTP 200  state=CONFIRMADA  idempotent_replay=true
-  GS-AM-00000001: 10961.71 → 10911.71 USD    GS-EU-00000002: 4618.80 → 4665.10 EUR
+  GS-AM-00000001: 16299.77 → 16249.77 USD    GS-EU-00000002: 4763.02 → 4809.32 EUR
   ✔ −50.00 USD / +46.30 EUR, uma única vez
   chaos depois do reinício (estado em memória, volta a off):
-  GET /admin/consistency -> HTTP 200 (X-Served-By: api-1)
-    {"ok":true,"checked_transactions":239,"confirmed":222,"aborted":17,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[]},"problems":[]}
+  GET /admin/consistency -> HTTP 200 (X-Served-By: api-2)
+    {"ok":true,"checked_transactions":89,"confirmed":78,"aborted":11,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[]},"problems":[]}
   ✔ /admin/consistency OK: sem dinheiro perdido nem duplicado
 
 ══════ Cenário 10 concluído ══════
-(2026-11-20T00:09:10Z)
+(2026-11-20T02:08:42Z)

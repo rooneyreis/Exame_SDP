@@ -6,6 +6,7 @@ import { icon } from "../icons.js";
 import { beneficiaries, sentTransfers } from "../store.js";
 import { $, bindCopy, esc, statusChip } from "../ui.js";
 import { friendlyFailure } from "./transfer.js";
+import { ROLE_LABEL, users, who } from "../staff.js";
 
 // Eventos técnicos do 2PC -> linguagem de rastreio bancário
 function trackStep(ev, tx) {
@@ -57,7 +58,9 @@ function actions(ref) {
 
 export async function render({ root, params, claims, navigate }) {
   const txId = params.id;
+  if (claims.role === "cliente") await beneficiaries.load().catch(() => []);
   let tx = await transfer(txId, { fresh: true }).catch(() => null);
+  const dir = claims.role !== "cliente" ? await users().catch(() => null) : null;
   const local = sentTransfers.get(txId);
 
   // Movimento sem transferência visível: depósito/levantamento, ou transferência recebida
@@ -100,6 +103,9 @@ export async function render({ root, params, claims, navigate }) {
             ${fx ? `<dt>Taxa de câmbio</dt><dd class="num">1 ${esc(tx.from_currency)} = ${esc(number(tx.fx_rate, 6))} ${esc(tx.to_currency)}</dd>` : ""}
             <dt>Comissão</dt><dd class="num">${esc(money(0, tx.from_currency))}</dd>
             ${local?.description ? `<dt>Descrição</dt><dd>${esc(local.description)}</dd>` : ""}
+            ${dir ? `<dt>Iniciada por</dt><dd>${esc(who(dir, tx.initiated_by || tx.user_id))} <span class="hint">(${esc(ROLE_LABEL[tx.initiated_role || "cliente"])})</span></dd>
+              <dt>Titular da conta</dt><dd>${esc(who(dir, tx.user_id))}</dd>
+              <dt>Aprovada por</dt><dd>${tx.approved_by ? esc(who(dir, tx.approved_by)) : `<span class="muted">não exigida</span>`}</dd>` : ""}
             <dt>Data da ordem</dt><dd>${esc(dateTime(tx.created_at))}</dd>
             <dt>Última atualização</dt><dd>${esc(dateTime(tx.updated_at))}</dd>
             ${tx.kind === "DISTRIBUIDA" ? `<dt>Liquidação</dt><dd>${esc(settlementLabel(tx.settlement_status))}</dd>` : ""}
@@ -135,7 +141,7 @@ export async function render({ root, params, claims, navigate }) {
   root.innerHTML = `
     <div class="receipt">
       <div class="row between no-print" style="margin:4px 0 18px">
-        <a href="#/${claims.role === "cliente" ? "history" : "audit"}" class="btn btn-ghost">${icon("chevronLeft")} Voltar</a>
+        <a href="#/${claims.role === "cliente" ? "history" : "admin/transfers"}" class="btn btn-ghost">${icon("chevronLeft")} Voltar</a>
         <span class="hint">${icon("lock")} Documento gerado a partir do registo do banco</span>
       </div>
       ${html}

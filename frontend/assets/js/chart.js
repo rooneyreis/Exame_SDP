@@ -103,3 +103,50 @@ export function areaChart(host, points, currency, { height = host.clientWidth > 
   svg.addEventListener("pointerdown", (e) => show(e.clientX));
   svg.addEventListener("pointerleave", () => wrap.classList.remove("hovering"));
 }
+
+/**
+ * Colunas de uma só série (ex.: transferências processadas por dia). Barras ≤ 24 px com
+ * topo arredondado, base reta na linha de base, valor no topo da última, tooltip por barra.
+ * rows: [{ label, value, detail }]
+ */
+export function barChart(host, rows, { height = 240, format = (v) => String(v) } = {}) {
+  if (!rows.length) { host.innerHTML = `<div class="empty" style="padding:40px 16px"><p>Sem dados no período.</p></div>`; return; }
+  const W = Math.max(Math.round(host.clientWidth) - 24, 280), H = height, padL = 40, padR = 12, padT = 18, padB = 28;
+  const max = Math.max(...rows.map((r) => r.value), 1);
+  const ticks = niceTicks(0, max, 4);
+  const top = ticks[ticks.length - 1];
+  const band = (W - padL - padR) / rows.length;
+  const bw = Math.min(24, band * 0.6);
+  const y = (v) => padT + (1 - v / top) * (H - padT - padB);
+  const step = Math.ceil(rows.length / Math.max(Math.floor((W - padL) / 56), 1));
+  host.innerHTML = `
+    <div class="chart">
+      <svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Gráfico de colunas">
+        <g class="axis">${ticks.map((v) => `<line class="gridline" x1="${padL}" x2="${W - padR}" y1="${y(v)}" y2="${y(v)}"/>
+          <text x="${padL - 8}" y="${y(v) + 4}" text-anchor="end">${compact(v)}</text>`).join("")}
+          ${rows.map((r, i) => (i % step === 0 || i === rows.length - 1) ? `<text x="${padL + band * i + band / 2}" y="${H - 8}" text-anchor="middle">${esc(r.label)}</text>` : "").join("")}
+        </g>
+        ${rows.map((r, i) => {
+          const x = padL + band * i + (band - bw) / 2, h = Math.max(y(0) - y(r.value), r.value ? 2 : 0), rad = Math.min(4, h);
+          return `<path class="bar" data-i="${i}" d="M${x},${y(0)} V${y(0) - h + rad} Q${x},${y(0) - h} ${x + rad},${y(0) - h} H${x + bw - rad} Q${x + bw},${y(0) - h} ${x + bw},${y(0) - h + rad} V${y(0)} Z"/>
+            <rect class="bar-hit" data-i="${i}" x="${padL + band * i}" y="${padT}" width="${band}" height="${H - padT - padB}" fill="transparent"/>`;
+        }).join("")}
+        <text class="bar-value" x="${padL + band * (rows.length - 1) + band / 2}" y="${y(rows[rows.length - 1].value) - 6}" text-anchor="middle">${esc(format(rows[rows.length - 1].value))}</text>
+      </svg>
+      <div class="chart-tip"></div>
+      <table class="sr-only"><tbody>${rows.map((r) => `<tr><th>${esc(r.label)}</th><td>${esc(format(r.value))}</td></tr>`).join("")}</tbody></table>
+    </div>`;
+  const wrap = host.querySelector(".chart"), tip = wrap.querySelector(".chart-tip"), svg = wrap.querySelector("svg");
+  svg.querySelectorAll(".bar-hit").forEach((hit) => {
+    hit.addEventListener("pointerenter", () => {
+      const r = rows[hit.dataset.i];
+      svg.querySelectorAll(".bar").forEach((b) => b.classList.toggle("dim", b.dataset.i !== hit.dataset.i));
+      const box = svg.getBoundingClientRect(), hb = hit.getBoundingClientRect();
+      tip.innerHTML = `<b class="num">${esc(format(r.value))}</b><span class="muted">${esc(r.label)}${r.detail ? ` · ${esc(r.detail)}` : ""}</span>`;
+      tip.style.left = `${hb.left - box.left + hb.width / 2}px`;
+      tip.style.top = `${(y(r.value) / H) * box.height}px`;
+      wrap.classList.add("hovering");
+    });
+  });
+  svg.addEventListener("pointerleave", () => { wrap.classList.remove("hovering"); svg.querySelectorAll(".bar").forEach((b) => b.classList.remove("dim")); });
+}

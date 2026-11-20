@@ -10,6 +10,8 @@ cd "$(dirname "$0")/.."
 PSQL=(docker compose run --rm -T pgclient)
 TLS="sslmode=verify-full"
 
+./scripts/migrate.sh
+
 echo "[seed] Taxas de câmbio (pg-core / coordinator)"
 "${PSQL[@]}" "host=pg-core.global.local dbname=coordinator $TLS" -q -f /sql/seed-coordinator.sql
 

@@ -5,8 +5,7 @@ import { $, $$, busy, esc, fieldError, toast } from "../ui.js";
 import { pageHead } from "./common.js";
 
 export async function render(ctx) {
-  if (ctx.path === "/admin/staff") return staff(ctx);
-  return infra(ctx);
+  return infra(ctx);   // a gestão de equipa está em views/users.js
 }
 
 const SERVICE_INFO = {
@@ -67,48 +66,6 @@ async function infra({ root }) {
       } catch (ex) { toast(ex.message, "bad"); }
       busy(b, false);
     }));
-  }
-  await draw();
-}
-
-async function staff({ root }) {
-  async function draw() {
-    const users = (await api("/admin/users")).filter((u) => u.role !== "cliente");
-    root.innerHTML = `
-      ${pageHead("Equipa", "Operadores, auditores e administradores com acesso ao back-office.")}
-      <div class="grid g-main">
-        <section class="card"><ul class="list">${users.map((u) => `
-          <li class="list-item"><span class="avatar">${esc(initials(u.full_name))}</span>
-            <span class="grow"><span class="title">${esc(u.full_name)}</span><span class="sub">${esc(u.email)} · desde ${esc(dateTime(u.created_at))}</span></span>
-            <span class="chip">${esc(roleLabel(u.role))}</span></li>`).join("")}</ul></section>
-        <form class="card card-pad" id="new" novalidate>
-          <h3>Adicionar membro</h3>
-          <div class="stack" style="gap:12px;margin-top:14px">
-            <div class="field"><label for="s-name">Nome</label><input class="input" id="s-name"></div>
-            <div class="field"><label for="s-email">Email</label><input class="input" id="s-email" type="email"></div>
-            <div class="field"><label for="s-phone">Telemóvel</label><input class="input" id="s-phone" type="tel"></div>
-            <div class="field"><label for="s-role">Função</label><select class="select" id="s-role"><option value="operador">Operador</option><option value="auditor">Auditor</option><option value="admin">Administrador</option></select></div>
-            <div class="field"><label for="s-pw">Palavra-passe inicial</label><input class="input" id="s-pw" type="password" autocomplete="new-password"><p class="hint">8+ caracteres, maiúscula, número e símbolo.</p></div>
-            <div id="s-err"></div>
-            <button class="btn btn-primary" type="submit">${icon("plus")} Criar acesso</button>
-          </div>
-        </form>
-      </div>`;
-    $("#new", root).addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const v = (id) => $(`#${id}`, root).value.trim();
-      const btn = e.submitter;
-      busy(btn, true);
-      try {
-        await api("/admin/staff", { method: "POST", body: { full_name: v("s-name"), email: v("s-email"), phone: v("s-phone").replace(/\s/g, ""), role: v("s-role"), password: $("#s-pw", root).value } });
-        toast("Acesso criado");
-        draw();
-      } catch (ex) {
-        busy(btn, false);
-        $("#s-err", root).innerHTML = `<div class="banner banner-bad">${icon("alert")}<span>${esc(ex.status === 409 ? "Já existe um utilizador com este email ou telemóvel." : ex.message)}</span></div>`;
-      }
-    });
-    void fieldError;
   }
   await draw();
 }

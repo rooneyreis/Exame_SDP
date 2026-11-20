@@ -42,3 +42,13 @@
 | Dados em repouso | AES-256-GCM nos dados pessoais; Argon2id nas senhas; privilégio mínimo nas roles da BD |
 | Entrada | Pydantic (montantes decimais, limites), parser XML sem DTD (XXE), corpo máximo 64 KiB |
 | Auditoria | log encadeado por hash no NFS, verificável (`/admin/audit`) |
+
+## Controlo de acesso baseado em perfis (RBAC)
+
+- Modelo: utilizador → perfil (no JWT, assinado) → permissões (derivadas no servidor a partir de `common/rbac.py`). Cada endpoint declara a permissão que exige. O cliente nunca envia permissões.
+- Princípio do menor privilégio: o auditor não tem nenhuma permissão de escrita; o operador não administra; o administrador não origina movimentos de dinheiro.
+- **Segregação de funções (maker-checker):** acima de um limiar configurável, a transferência registada por um operador só é executada depois de um administrador **diferente** a aprovar. A regra está na própria instrução SQL da transição de estado, por isso nem uma corrida entre dois pedidos a contorna.
+- **Escalada de privilégios impedida:** ninguém altera o próprio perfil ou estado; os perfis atribuíveis são só os de equipa; os clientes não se convertem em equipa; há sempre pelo menos um administrador ativo; e alterar o perfil revoga as sessões.
+- **Registo de segurança:** tentativas negadas (`ACESSO_NEGADO`), logins falhados, bloqueios, alterações de perfil e de limites, e consultas a dados pessoais decifrados ficam todos na auditoria encadeada, com IP e o estado antes/depois.
+- **Proteção dos registos:** hash encadeado (deteção de alteração ou eliminação) e a BD sem `DELETE` sobre transações e pedidos para a conta da aplicação.
+- Evidência: `tests/integration/test_phase8_rbac.py` (20 chamadas diretas proibidas recusadas com `403`, fluxo de aprovação e rejeição, limites, gestão de utilizadores, beneficiários e audit trail) e `scripts/rbac-smoke.sh` (matriz real perfil × endpoint).

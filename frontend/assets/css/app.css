@@ -540,3 +540,32 @@ a.account-card:active { transform: scale(0.99); }
   .print-only { display: block; }
   .receipt-icon { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
+
+/* ------------------------------------------------------------------ back-office (perfis) */
+.chart .bar { fill: var(--chart); transition: opacity .15s var(--ease); }
+.chart .bar.dim { opacity: .35; }
+.chart .bar-value { fill: var(--ink-2); font-size: 11px; font-weight: 600; font-family: var(--font); }
+.role-badge { display: inline-flex; align-items: center; gap: 6px; font-size: .72rem; font-weight: 650; letter-spacing: .04em;
+  text-transform: uppercase; padding: 3px 9px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); }
+.role-admin { background: rgba(168,133,74,.14); color: var(--gold); }
+.role-auditor { background: var(--good-soft); color: var(--good-ink); }
+.perm-grid { width: 100%; border-collapse: collapse; font-size: .84rem; }
+.perm-grid th, .perm-grid td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: center; }
+.perm-grid th:first-child, .perm-grid td:first-child { text-align: left; }
+.perm-grid td .yes { color: var(--good-ink); } .perm-grid td .no { color: var(--ink-3); opacity: .5; }
+.finding { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: start; padding: 14px 24px; border-top: 1px solid var(--line); }
+.finding:first-child { border-top: 0; }
+.sev { width: 10px; height: 10px; border-radius: 50%; margin-top: 6px; }
+.sev-alta { background: var(--bad); box-shadow: 0 0 0 4px var(--bad-soft); }
+.sev-media { background: var(--warn); box-shadow: 0 0 0 4px var(--warn-soft); }
+.sev-baixa { background: var(--ink-3); box-shadow: 0 0 0 4px var(--surface-sunken); }
+.pager { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 24px; border-top: 1px solid var(--line); }
+.mini-kv { display: flex; flex-direction: column; gap: 2px; }
+.mini-kv span { font-size: .72rem; color: var(--ink-3); text-transform: uppercase; letter-spacing: .05em; }
+.event-json { font-family: var(--mono); font-size: .76rem; white-space: pre-wrap; word-break: break-all; background: var(--surface-sunken);
+  border-radius: 10px; padding: 12px; max-height: 340px; overflow: auto; }
+@media print {
+  .toolbar, .pager, .page-head .row { display: none !important; }
+  .table th, .table td { padding: 6px 8px; font-size: 10px; }
+  .table-wrap { overflow: visible; }
+}

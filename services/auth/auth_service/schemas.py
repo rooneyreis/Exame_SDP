@@ -1,4 +1,5 @@
 """Request bodies (validated by FastAPI/Pydantic; errors become HTTP 422)."""
+import uuid
 from datetime import date
 from typing import Literal
 
@@ -57,3 +58,51 @@ class RefreshRequest(BaseModel):
 
 class ApproveKycRequest(BaseModel):
     currency: Literal["EUR", "USD", "MZN"] | None = None  # default: currency of the region
+
+
+# --- administração de utilizadores e beneficiários ---------------------------------
+
+class UserUpdate(BaseModel):
+    full_name: str | None = Field(default=None, min_length=3, max_length=120)
+    email: str | None = None
+    phone: str | None = None
+    role: Literal["operador", "auditor", "admin"] | None = None
+
+    @field_validator("email")
+    @classmethod
+    def check_email(cls, v):
+        if v is not None and not validation.is_valid_email(v):
+            raise ValueError("email inválido")
+        return v.lower() if v else v
+
+    @field_validator("phone")
+    @classmethod
+    def check_phone(cls, v):
+        if v is not None and not validation.is_valid_phone(v):
+            raise ValueError("telefone inválido")
+        return v
+
+
+class StatusChange(BaseModel):
+    action: Literal["block", "unblock", "deactivate", "reactivate"]
+    reason: str | None = Field(default=None, max_length=200)
+
+
+IBAN_PATTERN = r"^GS-(EU|AM)-[0-9]{8}$"
+
+
+class BeneficiaryIn(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    iban: str = Field(pattern=IBAN_PATTERN)
+    nickname: str | None = Field(default=None, max_length=60)
+    favorite: bool = False
+
+
+class BeneficiaryUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=120)
+    nickname: str | None = Field(default=None, max_length=60)
+    favorite: bool | None = None
+
+
+class AdminBeneficiaryIn(BeneficiaryIn):
+    owner_id: uuid.UUID

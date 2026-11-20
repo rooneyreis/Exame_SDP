@@ -35,6 +35,7 @@ export async function render({ root, query, navigate }) {
     root.innerHTML = `${pageHead("Transferir")}<div class="card"><div class="empty"><h3>Sem contas ativas</h3></div></div>`;
     return;
   }
+  await beneficiaries.load().catch(() => []);
   const saved = beneficiaries.all();
   const state = {
     from: active.find((a) => a.iban === query.get("from")) || active[0],
@@ -266,7 +267,7 @@ export async function render({ root, query, navigate }) {
         beneficiary: e.name, description: e.description, state: d.state || "INICIADA", key });
     }
     if (e.save && (r.status === 201 || r.status === 200 || r.status === 202) && !beneficiaries.byIban(e.dest)) {
-      beneficiaries.save({ name: e.name || fmtIban(e.dest), iban: e.dest });
+      beneficiaries.save({ name: e.name || fmtIban(e.dest), iban: e.dest }).catch(() => {});
     }
     beneficiaries.touch(e.dest);
 
