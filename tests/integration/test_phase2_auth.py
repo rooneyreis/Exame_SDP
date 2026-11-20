@@ -234,5 +234,9 @@ def test_kyc_on_unknown_user_is_404(http, operator_token):
 
 
 def test_plain_http_is_not_served():
-    with pytest.raises(httpx.HTTPError):
-        httpx.get("http://localhost:80/health", timeout=3)
+    """Portátil: nada a ouvir na porta 80. Servidor: só um redirecionamento 301 para HTTPS."""
+    try:
+        r = httpx.get("http://localhost:80/health", timeout=3)
+    except httpx.HTTPError:
+        return
+    assert r.status_code == 301 and r.headers["location"].startswith("https://")

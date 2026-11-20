@@ -1,4 +1,5 @@
 """Phase 1: PostgreSQL nodes — replication, 2PC support, TLS, fragmentation, roles."""
+import os
 import uuid
 
 import pytest
@@ -131,7 +132,7 @@ def test_settings_for_2pc_and_timeouts():
 
 def test_service_role_cannot_read_another_service_database():
     result = psql(
-        "host=pg-core.global.local dbname=auth user=api_svc password=api-pass sslmode=verify-full",
+        f"host=pg-core.global.local dbname=auth user=api_svc password={os.environ.get('API_DB_PASSWORD', 'api-pass')} sslmode=verify-full",
         "SELECT 1",
         check=False,
     )

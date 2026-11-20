@@ -50,6 +50,8 @@ for entry in "${SERVICES[@]}"; do
   san="DNS:$name, DNS:$name.global.local, IP:$ip"
   # nginx is also reached from the host (curl https://localhost), so it needs these names too.
   [[ "$name" == "nginx" ]] && san="$san, DNS:localhost, IP:127.0.0.1"
+  # Num servidor: NGINX_EXTRA_SANS="IP:203.0.113.10" (ou "DNS:nome,IP:...") para o browser aceitar esse endereço.
+  [[ "$name" == "nginx" && -n "${NGINX_EXTRA_SANS:-}" ]] && san="$san, $NGINX_EXTRA_SANS"
   # Both api instances answer as "api.global.local" too: nginx verifies that one name
   # whichever instance (upstream) it picks.
   [[ "$name" == api-* ]] && san="$san, DNS:api.global.local"

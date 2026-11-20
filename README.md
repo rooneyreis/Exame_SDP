@@ -69,6 +69,8 @@ make test                     # testes unitários + integração (~5 min)
 
 Documentação interativa da API: `https://localhost/docs` (OpenAPI gerada pelo FastAPI).
 
+**Num servidor** (Ubuntu, 8 GB de RAM recomendados): `sudo bash scripts/deploy.sh` instala tudo e arranca. Ver [`docs/DEPLOY.md`](docs/DEPLOY.md).
+
 ## Rede
 
 Rede Docker bridge `globalnet`, subnet `172.28.0.0/24`, IPs fixos. Cada serviço tem também o alias DNS `<nome>.global.local`, que é o nome usado nos certificados TLS (SAN).
@@ -408,7 +410,7 @@ global-scale-system/
 │   ├── certs/                  # gerado por gen-certs.sh (não versionado)
 │   └── keys/                   # gerado por gen-keys.sh (não versionado)
 ├── scripts/
-│   ├── gen-certs.sh, gen-keys.sh, seed.sh, failover.sh, test.sh
+│   ├── gen-certs.sh, gen-keys.sh, seed.sh, failover.sh, test.sh, deploy.sh
 │   └── demo/                   # 13 cenários + run-all.sh + lib.sh + concurrency.py
 ├── tests/
 │   ├── unit/                   # lógica pura, sem Docker

@@ -21,9 +21,14 @@ plain=$(docker exec pg-europa psql -U postgres -tAc "SELECT count(*) FROM pg_sta
 [[ "$plain" == 0 ]] && ok "0 ligações de rede sem TLS" || fail "$plain ligações sem TLS"
 pause
 
-step "4. HTTP simples à porta 80 do host → nada a ouvir"
+step "4. HTTP simples à porta 80 → recusado ou redirecionado para HTTPS (nunca serve dados)"
 cmd "curl http://localhost/health"
-if curl -s --max-time 3 http://localhost/health >/dev/null 2>&1; then fail "HTTP respondeu"; else ok "ligação recusada (só existe HTTPS 443)"; fi
+http_code=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 3 http://localhost/health || true)
+case "$http_code" in
+  000*) ok "ligação recusada (só existe HTTPS 443)" ;;
+  "301 https://"*) ok "HTTP $http_code — redirecionado para HTTPS, sem conteúdo" ;;
+  *) fail "HTTP respondeu com conteúdo: $http_code" ;;
+esac
 
 step "5. HTTP simples na porta HTTPS → o nginx recusa"
 cmd "curl http://localhost:443/health"

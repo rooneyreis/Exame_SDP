@@ -4,6 +4,8 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+# No servidor as senhas internas vêm do .env gerado pelo deploy.sh
+if [[ -f .env ]]; then set -a; source .env; set +a; fi
 
 if [[ ! -x .venv/bin/python ]]; then
   echo "[test] A criar o ambiente virtual .venv..."
