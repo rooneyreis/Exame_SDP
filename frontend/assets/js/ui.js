@@ -135,3 +135,83 @@ export function fieldError(input, message) {
     field?.append(p);
   }
 }
+
+/** Painel lateral de detalhe: entra pela direita e sai pelo mesmo caminho. Devolve { el, close }. */
+export function drawer({ title, subtitle = "", body, footer = "", wide = false, onClose }) {
+  const previous = document.activeElement;
+  const scrim = document.createElement("div");
+  scrim.className = "drawer-scrim";
+  const panel = document.createElement("aside");
+  panel.className = `drawer${wide ? " wide" : ""}`;
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-modal", "true");
+  panel.setAttribute("aria-labelledby", "drawer-title");
+  panel.innerHTML = `
+    <div class="drawer-head"><div><h2 id="drawer-title">${esc(title)}</h2>${subtitle ? `<div class="sub">${subtitle}</div>` : ""}</div>
+      <button class="btn btn-ghost btn-icon" data-close aria-label="Fechar">${icon("x")}</button></div>
+    <div class="drawer-body">${body}</div>
+    ${footer ? `<div class="drawer-foot">${footer}</div>` : ""}`;
+  document.body.append(scrim, panel);
+  let closed = false;
+  function close(result) {
+    if (closed) return;
+    closed = true;
+    scrim.classList.add("leaving"); panel.classList.add("leaving");
+    document.removeEventListener("keydown", onKey);
+    setTimeout(() => { scrim.remove(); panel.remove(); previous?.focus?.(); onClose?.(result); }, 220);
+  }
+  function onKey(e) { if (e.key === "Escape") close(); }
+  document.addEventListener("keydown", onKey);
+  scrim.addEventListener("click", () => close());
+  panel.addEventListener("click", (e) => { if (e.target.closest("[data-close]")) close(); });
+  setTimeout(() => $("[data-close]", panel)?.focus(), 60);
+  return { el: panel, close };
+}
+
+/** Menu suspenso ancorado a um botão (abre a partir dele). Fecha com Esc ou clique fora. */
+export function popover(anchor, html, { className = "", align = "right", onClose } = {}) {
+  document.querySelectorAll(".popover").forEach((p) => p._close?.());
+  const pop = document.createElement("div");
+  pop.className = `popover ${className}`;
+  pop.setAttribute("role", "menu");
+  pop.innerHTML = html;
+  document.body.append(pop);
+  const r = anchor.getBoundingClientRect();
+  const w = pop.offsetWidth;
+  pop.style.top = `${r.bottom + 8}px`;
+  pop.style.left = `${Math.max(12, Math.min(window.innerWidth - w - 12, align === "right" ? r.right - w : r.left))}px`;
+  anchor.setAttribute("aria-expanded", "true");
+  function close() {
+    pop.remove();
+    anchor.setAttribute("aria-expanded", "false");
+    document.removeEventListener("mousedown", outside, true);
+    document.removeEventListener("keydown", onKey);
+    onClose?.();
+  }
+  function outside(e) { if (!pop.contains(e.target) && !anchor.contains(e.target)) close(); }
+  function onKey(e) { if (e.key === "Escape") { close(); anchor.focus(); } }
+  setTimeout(() => document.addEventListener("mousedown", outside, true));
+  document.addEventListener("keydown", onKey);
+  pop._close = close;
+  return { el: pop, close };
+}
+
+/** Paginação no cliente. */
+export function paginate(items, page, size) {
+  const pages = Math.max(1, Math.ceil(items.length / size));
+  const p = Math.min(Math.max(1, page), pages);
+  return { page: p, pages, slice: items.slice((p - 1) * size, p * size), from: items.length ? (p - 1) * size + 1 : 0, to: Math.min(p * size, items.length), total: items.length };
+}
+
+export function pagerHtml({ page, pages, from, to, total }, label = "registos") {
+  const nums = [];
+  for (let i = 1; i <= pages; i++) if (i === 1 || i === pages || Math.abs(i - page) <= 1) nums.push(i); else if (nums[nums.length - 1] !== "…") nums.push("…");
+  return `<div class="pagination"><span>${total ? `${from}–${to} de ${total} ${label}` : `0 ${label}`}</span>
+    <div class="pages"><button data-page="${page - 1}" ${page <= 1 ? "disabled" : ""} aria-label="Anterior">${icon("chevronLeft")}</button>
+    ${nums.map((n) => n === "…" ? `<span class="muted">…</span>` : `<button data-page="${n}" ${n === page ? 'aria-current="true"' : ""}>${n}</button>`).join("")}
+    <button data-page="${page + 1}" ${page >= pages ? "disabled" : ""} aria-label="Seguinte">${icon("chevronRight")}</button></div></div>`;
+}
+
+export function bindPager(root, onPage) {
+  root.querySelectorAll(".pagination [data-page]").forEach((b) => b.addEventListener("click", () => onPage(Number(b.dataset.page))));
+}
