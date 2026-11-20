@@ -1,24 +1,73 @@
 # Global-Scale System
 
-Plataforma distribuída de transações financeiras internacionais (Exame Prático de Sistemas Distribuídos e Paralelos — ISUTC, LECC 31).
+Plataforma distribuída de transações financeiras internacionais de alta disponibilidade. Exame Prático Laboratorial de **Sistemas Distribuídos e Paralelos**, ISUTC, LECC 31.
 
-> Em construção, por fases. Estado atual: **Fase 6 — Auditoria, relatórios e admin** concluída.
+Clientes da Europa e da América têm os dados em **nós de base de dados diferentes**. Transferências entre regiões são **transações distribuídas com Two-Phase Commit**, com recuperação automática. O sistema continua a funcionar e **nunca fica inconsistente** quando cai um nó ou a rede.
 
-## Requisitos
+| Área do exame | Onde está |
+|---|---|
+| Arquitetura, SO e Redes, DFS | Docker Compose, rede `globalnet` com IPs fixos e DNS `*.global.local`, NFS v4 (NFS-Ganesha) |
+| Processamento e Transações | coordenador 2PC (`services/coordinator`), shards PostgreSQL com réplicas e failover |
+| Serviços Web e Interoperabilidade | API REST FastAPI + banco parceiro em Java 21 com XML assinado; análise OMG/OMA |
+| Segurança | TLS em tudo, JWT RS256 descentralizado, Ed25519 + SHA-256, AES-256-GCM em repouso, Argon2id |
+| Documentação e Defesa | este README, [`docs/relatorio/`](docs/relatorio/README.md), 13 cenários de demo com evidências |
 
-- Windows + WSL2 (Ubuntu) + Docker Desktop com integração WSL ativa
+## Índice
+
+1. [Arquitetura](#arquitetura) · 2. [Requisitos e arranque](#requisitos-e-arranque) · 3. [Rede](#rede) · 4. [DFS (NFS v4)](#sistema-de-ficheiros-distribuído-nfs-v4) · 5. [Base de dados](#base-de-dados-distribuída-postgresql-16) · 6. [Autenticação](#autenticação-serviço-auth) · 7. [API](#api-api-1-e-api-2-atrás-do-nginx) · 8. [2PC](#transferências-e-two-phase-commit-serviço-coordinator) · 9. [Legado Java](#módulo-legado-banco-parceiro-java-21-xml) · 10. [Auditoria e admin](#auditoria-relatórios-e-administração-nfs) · 11. [Demonstração](#cenários-de-demonstração) · 12. [Testes](#testes) · 13. [Decisões técnicas](#decisões-técnicas) · 14. [Limitações](#limitações-conhecidas) · 15. [Estrutura](#estrutura-do-repositório)
+
+## Arquitetura
+
+```mermaid
+flowchart TB
+    C[Cliente / curl] -- HTTPS 443 --> N[nginx]
+    N -- HTTPS round-robin --> A1[api-1]
+    N -- HTTPS --> A2[api-2]
+    N -- HTTPS /auth --> AU[auth]
+    A1 & A2 -. JWKS em cache .-> AU
+    A1 & A2 -- POST /tx assinado Ed25519 --> CO[coordinator 2PC]
+    CO -- XML assinado --> LB[legacy-bank Java 21]
+    AU --> PC[(pg-core<br/>auth + log 2PC)]
+    CO --> PC
+    CO -- 2PC --> PE[(pg-europa)]
+    CO -- 2PC --> PA[(pg-america)]
+    A1 & A2 --> PE & PA
+    PE -- streaming TLS --> PER[(pg-europa-replica)]
+    PA -- streaming TLS --> PAR[(pg-america-replica)]
+    NFS[[nfs: /audit]]
+    AU & A1 & A2 & CO -. NFS v4 .-> NFS
+```
+
+| Contentor | Tecnologia | Função |
+|---|---|---|
+| `nginx` | Nginx 1.27 | único ponto exposto (443); balanceador com failover entre api-1/api-2; re-encripta TLS |
+| `api-1`, `api-2` | Python 3.12, FastAPI | API pública sem estado; valida JWT localmente; routing por região |
+| `auth` | Python 3.12, FastAPI | registo, KYC, login, JWT RS256, JWKS; único com a chave privada |
+| `coordinator` | Python 3.12, FastAPI, psycopg 3 | coordenador 2PC, log durável, recuperação, liquidação com o legado |
+| `legacy-bank` | Java 21 (só JDK) | "mainframe" do banco parceiro: XML assinado, ledger de largura fixa |
+| `nfs` | NFS-Ganesha | DFS: auditoria e relatórios partilhados |
+| `pg-core` | PostgreSQL 16 | BD `auth` e BD `coordinator` |
+| `pg-europa` (+réplica) | PostgreSQL 16 | shard Europa (`GS-EU-*`) |
+| `pg-america` (+réplica) | PostgreSQL 16 | shard América (`GS-AM-*`) |
+
+## Requisitos e arranque
+
+- Windows + WSL2 (Ubuntu) + Docker Desktop com integração WSL ativa (testado com 16 GB de RAM; o WSL usa ~8 GB)
 - No Ubuntu: `git`, `openssl`, `python3` + `python3-venv`, `make`, `jq`, `curl`
 - Repositório dentro do sistema de ficheiros do WSL (`~/global-scale-system`), não em `/mnt/c`
-
-## Arranque rápido
+- Porta 443 livre no host
 
 ```bash
-./scripts/gen-certs.sh   # CA local + certificado TLS por serviço (infra/certs, não versionado)
-./scripts/gen-keys.sh    # RS256 (JWT), Ed25519 (assinaturas), AES-256 (dados em repouso) — infra/keys
-docker compose up -d     # NFS, 5 nós PostgreSQL, auth, legacy-bank, coordinator, api-1, api-2, nginx
-./scripts/seed.sh        # câmbios, 3 contas por shard, staff e 6 clientes
-make test                # suite de testes (unitários + integração)
+git clone https://github.com/rooneyreis/Exame_SDP.git ~/global-scale-system && cd ~/global-scale-system
+./scripts/gen-certs.sh        # CA local + certificado TLS por serviço   (infra/certs, não versionado)
+./scripts/gen-keys.sh         # RS256 (JWT), Ed25519 (assinaturas), AES-256 (dados em repouso)   (infra/keys)
+docker compose up -d --wait   # 12 contentores
+./scripts/seed.sh             # câmbios, 3 contas por shard, staff e 6 clientes
+make test                     # testes unitários + integração (~5 min)
+./scripts/demo/run-all.sh     # os 13 cenários de demonstração (~4 min)
 ```
+
+Documentação interativa da API: `https://localhost/docs` (OpenAPI gerada pelo FastAPI).
 
 ## Rede
 
@@ -240,40 +289,110 @@ dca0276b-d89b-5c3d-ac71-3171e6284dc0GS-EU-00000001GS-AM-00000001000000000010000E
 
 ## Cenários de demonstração
 
+Cada script imprime o que vai fazer, executa com `curl --cacert infra/certs/ca.crt`, mostra os resultados com `jq`, termina com erro ao primeiro resultado inesperado e grava a saída em `docs/evidencias/<cenário>.log`.
+
+| Script | Demonstra |
+|---|---|
+| `01-registo-login.sh` | registo EU e AM → pendente → KYC → conta **no shard certo** (consulta direta a cada Postgres) → login → JWT |
+| `02-transferencia-local.sh` | EU → EU, `kind=LOCAL` (uma transação, sem 2PC) |
+| `03-transferencia-2pc.sh` | EU/EUR → AM/USD com câmbio; linha temporal do 2PC; liquidação no legado e registo no ledger |
+| `04-idempotencia.sh` | o mesmo pedido 3× com a mesma `Idempotency-Key` → 1 débito |
+| `05-adulteracao.sh` | 5 ataques ao canal api → coordinator recusados; linha alterada no NFS detetada por `/admin/audit` |
+| `06-queda-api.sh` | `docker stop api-1` → todos os pedidos servidos pela api-2 |
+| `07-queda-auth.sh` | `docker stop auth` → tokens existentes continuam válidos; login novo falha |
+| `08-queda-shard-failover.sh` | `docker stop pg-europa` → leituras pela réplica → `failover.sh EU` → transferências sem mudar configuração → antigo primário volta como réplica |
+| `09-queda-durante-2pc.sh` | `docker stop pg-america` entre o PREPARE e o COMMIT → recovery conclui quando volta |
+| `10-crash-coordenador.sh` | coordenador morre depois da decisão → reinicia sozinho → `COMMIT PREPARED` pela recuperação |
+| `11-concorrencia.sh` | 50 transferências concorrentes → 0 deadlocks, dinheiro conservado ao cêntimo |
+| `12-tls.sh` | Postgres sem TLS, HTTP simples, TLS 1.1 e certificado de outro nó → tudo recusado |
+| `13-particao-rede.sh` | `docker network disconnect` do pg-america depois e antes do PREPARE → commit concluído / abort sem débito |
+
 ```bash
-./scripts/demo/01-registo-login.sh   # registo → KYC → conta no shard certo → login → JWT
-./scripts/demo/06-queda-api.sh       # docker stop api-1 → tudo servido pela api-2
-./scripts/demo/07-queda-auth.sh      # docker stop auth → tokens existentes continuam válidos
-./scripts/demo/02-transferencia-local.sh   # EU → EU, kind=LOCAL
-./scripts/demo/03-transferencia-2pc.sh     # EU/EUR → AM/USD com linha temporal do 2PC
-./scripts/demo/04-idempotencia.sh          # 3 envios, 1 débito
-./scripts/demo/09-queda-durante-2pc.sh     # docker stop pg-america entre o PREPARE e o COMMIT
-./scripts/demo/10-crash-coordenador.sh     # coordenador morre depois da decisão
-./scripts/demo/11-concorrencia.sh          # 50 transferências em paralelo
-./scripts/demo/05-adulteracao.sh           # pedidos adulterados rejeitados; log alterado no NFS detetado
-./scripts/demo/08-queda-shard-failover.sh  # docker stop pg-europa → failover → volta como réplica
-./scripts/demo/12-tls.sh                   # tudo sem TLS é recusado
-./scripts/demo/13-particao-rede.sh         # docker network disconnect durante o 2PC (2 variantes)
-./scripts/demo/run-all.sh                  # todos, por ordem (PAUSE=1 para a apresentação)
-PAUSE=1 ./scripts/demo/06-queda-api.sh   # pausa entre passos (apresentação ao docente)
+./scripts/demo/run-all.sh                 # todos, por ordem
+PAUSE=1 ./scripts/demo/run-all.sh         # com pausas entre passos (apresentação ao docente)
+PAUSE=1 ./scripts/demo/09-queda-durante-2pc.sh
 ```
 
-A saída de cada cenário fica em `docs/evidencias/<cenário>.log`.
+Capturas de ecrã para o relatório: ver [`docs/evidencias/capturas/`](docs/evidencias/capturas/README.md).
 
-## Limitações conhecidas (parcial)
+## Testes
 
-- Liquidação `REJEITADA` não gera compensação automática (o dinheiro já foi movido entre shards); em produção seria uma Saga de estorno.
-- **Coordenador 2PC é ponto único de falha temporário**: enquanto está em baixo, as transferências distribuídas ficam bloqueadas (e os shards mantêm os locks das preparadas), mas **nunca inconsistentes**, graças ao log durável e à recuperação. Em produção: coordenador replicado (consenso Raft) ou padrão Saga.
-- O 2PC bloqueia: entre o PREPARE e a decisão, as contas envolvidas ficam com lock. A Saga trocaria isto por consistência eventual com compensações.
+```bash
+make test        # = ./scripts/test.sh: unitários (sem Docker) e depois integração (ambiente a correr)
+```
 
-- O access token JWT é *stateless*: o logout revoga o refresh token, mas o access token continua válido até expirar (máx. 15 min). Em produção: lista de `jti` revogados ou tokens mais curtos.
+| Tipo | Onde | O que cobre |
+|---|---|---|
+| Unitários (pytest) | `tests/unit/` | routing por região, câmbio (half-even), JSON canónico e assinaturas Ed25519, AES-GCM, JWT (expirado, `alg: none`, kid, adulterado), cadeia de hashes da auditoria, validação de senha/idade, decisões do recovery, contrato XML, agregação do relatório |
+| Integração (pytest + httpx) | `tests/integration/test_phase*.py` | cada fase: NFS com locks, replicação e failover, TLS, auth (bloqueio, refresh, KYC), API, 2PC (commit, abort, presumed abort, crash depois da decisão, idempotência, adulteração), legado Java (XML válido, adulterado, acima do limite, XXE), auditoria, relatório concorrente, estado do cluster |
+| Aceitação | `tests/integration/test_phase*_zz_demos.py` | os 13 cenários de demonstração correm do princípio ao fim |
 
-- Failover manual (`failover.sh`); em produção, Patroni + etcd. Se os **dois** nós de uma região estiverem em baixo depois de um failover e o antigo primário arrancar primeiro, ele fica primário e o que foi escrito no nó promovido perde-se. É precisamente o problema que um gestor de cluster com consenso resolve.
-- Replicação assíncrona: com `docker stop` (paragem limpa) o primário envia todo o WAL à réplica antes de sair. Numa queda abrupta, as últimas transações podem não ter chegado. Replicação síncrona (`synchronous_standby_names`) evitaria isso, à custa de latência.
-- `pg-core` não tem réplica neste protótipo.
+Alguns testes correm dentro dos contentores, porque o coordenador e o legado não estão expostos fora da rede: `tests/integration/tamper_client.py` (dentro da api-1) e `tests/integration/legacy_client.py` (dentro do coordinator).
 
-- Servidor NFS único (ponto único de falha); em produção, GlusterFS/CephFS replicado.
-- Em Docker Desktop todos os mounts NFS são feitos pelo mesmo kernel (a VM do Docker, `clientaddr=172.28.0.1`). Os locks são arbitrados pelo servidor (`local_lock=none`), mas num cenário real cada nó seria uma máquina diferente com o seu próprio cliente NFS.
-- `Graceless = true` (ver acima).
-- Auditoria: a cadeia de hashes deteta alterações, mas quem tiver acesso de escrita ao NFS pode **reescrever o ficheiro inteiro** com hashes novos. Em produção: ancorar periodicamente o último hash num sistema externo (outro nó, WORM, assinatura com chave do auditor).
-- Nunca alterar o diretório exportado diretamente no servidor NFS: os clientes têm cache de entradas e ficam com referências obsoletas. Todas as escritas passam pelo protocolo NFS.
+## Decisões técnicas
+
+| Decisão | Porquê |
+|---|---|
+| Fragmentação por região com a regra no esquema (`CHECK` no IBAN) e num único sítio do código (`common/db.py`) | dados perto dos clientes; a BD recusa dados da região errada mesmo que a aplicação erre |
+| 2PC (e não Saga) para as transferências | o enunciado exige garantias ACID: nunca débito sem crédito. A Saga daria só consistência eventual |
+| Ponto de decisão = commit de `DECISAO_COMMIT` no pg-core; presumed abort | se não há decisão gravada, ninguém fez commit, por isso abortar é sempre seguro |
+| PREPARE pela ordem global EU → AM (e por IBAN) | evita deadlocks distribuídos, que nenhum PostgreSQL consegue detetar sozinho |
+| `tx_id = uuid5(utilizador:Idempotency-Key)` calculado pela api | o cliente sabe o `tx_id` mesmo se o coordenador morrer, e pode repetir sem duplicar |
+| Conninfo multi-host (`target_session_attrs=read-write`) | failover transparente para os serviços, sem reconfiguração |
+| Entrypoint Postgres que volta como réplica se o par já for primário | evita split-brain quando o antigo primário regressa |
+| JWT RS256 + JWKS em cache | só o auth pode emitir; todos validam localmente, e o auth deixa de ser ponto único de falha para pedidos autenticados |
+| Ed25519 sobre JSON canónico / string canónica no XML | integridade e origem; independente da formatação do JSON/XML entre Python e Java |
+| AES-256-GCM com AAD = `user_id` | cifra autenticada: deteta adulteração e impede trocar valores cifrados entre utilizadores |
+| NFS-Ganesha (espaço de utilizador) | não depende de módulos do kernel do WSL2; funciona sem `privileged` |
+| Um ficheiro de auditoria por nó + um relatório partilhado com `fcntl.lockf` | logs sem conflitos de escrita; o relatório demonstra o acesso concorrente gerido pelo DFS |
+| Python asyncio nos serviços, virtual threads no Java | sistema dominado por I/O de rede; concorrência simples e explícita |
+| Leituras com fallback para a réplica | saldos e extratos disponíveis durante a queda de um primário, sem leituras desatualizadas quando o primário está bem |
+
+## Limitações conhecidas
+
+Desenvolvidas em [`docs/relatorio/10-limitacoes.md`](docs/relatorio/10-limitacoes.md):
+
+- **Coordenador 2PC é um ponto único de falha temporário**: enquanto está em baixo, as transferências distribuídas ficam bloqueadas, mas **nunca inconsistentes** (log durável + recuperação). Em produção: coordenador replicado com consenso (Raft) ou padrão Saga.
+- **O 2PC bloqueia** as contas entre o PREPARE e a decisão; a Saga trocaria isto por consistência eventual com compensações.
+- **pg-core não tem réplica** neste protótipo (poderia ter, como os shards).
+- **NFS com um único servidor** (ponto único de falha); em produção, GlusterFS/CephFS replicado. `Graceless = true` dispensa o *grace period* de recuperação de locks.
+- **Failover do Postgres manual** (`failover.sh`); em produção, Patroni + etcd. Se os dois nós de uma região caírem e o antigo primário arrancar primeiro, as escritas feitas no promovido perdem-se.
+- **Replicação assíncrona**: numa queda abrupta, as últimas transações (incluindo PREPAREs) podem não ter chegado à réplica. `docker stop` é uma paragem limpa e envia todo o WAL.
+- Liquidação `REJEITADA` sem estorno automático; access token válido até expirar após logout; auditoria reescrevível por quem tem escrita no NFS (sem ancoragem externa).
+- **KYC simulado**; taxas de câmbio fixas; todos os "nós" numa só máquina (latência entre regiões ≈ 0, mesmo kernel cliente NFS).
+
+## Estrutura do repositório
+
+```
+global-scale-system/
+├── docker-compose.yml          # 12 serviços, rede globalnet, volumes (incl. volume NFS)
+├── Makefile, pytest.ini, requirements-dev.txt
+├── common/                     # biblioteca Python partilhada (copiada para cada imagem)
+│   ├── crypto.py               # AES-GCM, SHA-256, JSON canónico, Ed25519, pedidos assinados
+│   ├── jwt_auth.py             # emissão (auth) e validação JWT RS256 via JWKS; dependências por role
+│   ├── db.py                   # routing por região, conninfo multi-host, pools
+│   ├── audit.py                # auditoria no NFS com hash encadeado
+│   ├── reports.py              # relatório diário partilhado com fcntl.lockf
+│   ├── transfers.py            # tx_id = uuid5(utilizador:Idempotency-Key)
+│   └── logging.py              # logs JSON com request_id / tx_id
+├── services/
+│   ├── auth/                   # registo, KYC, login, JWKS, staff
+│   ├── api/                    # API pública (2 instâncias)
+│   └── coordinator/            # 2PC, recuperação, chaos, liquidação (logic.py = regras puras)
+├── legacy-bank/src/            # Java 21: HttpsServer, DOM seguro, Ed25519, ledger de largura fixa
+├── infra/
+│   ├── nginx/nginx.conf
+│   ├── postgres/               # postgresql.conf, pg_hba.conf (só hostssl), entrypoint, init SQL
+│   ├── nfs/                    # NFS-Ganesha
+│   ├── certs/                  # gerado por gen-certs.sh (não versionado)
+│   └── keys/                   # gerado por gen-keys.sh (não versionado)
+├── scripts/
+│   ├── gen-certs.sh, gen-keys.sh, seed.sh, failover.sh, test.sh
+│   └── demo/                   # 13 cenários + run-all.sh + lib.sh + concurrency.py
+├── tests/
+│   ├── unit/                   # lógica pura, sem Docker
+│   └── integration/            # contra o ambiente a correr
+└── docs/
+    ├── relatorio/              # rascunhos das secções do relatório técnico
+    └── evidencias/             # saída de cada cenário (+ capturas/)
+```
