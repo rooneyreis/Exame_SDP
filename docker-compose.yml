@@ -41,6 +41,7 @@ volumes:
   pg-europa-replica-data:
   pg-america-data:
   pg-america-replica-data:
+  legacy-data:
 
   # Distributed file system as seen by the other nodes: an NFS v4 mount of nfs:/audit.
   # The Docker daemon does the mount, so client containers need no extra privileges.
@@ -210,6 +211,28 @@ services:
       retries: 20
     restart: unless-stopped
 
+  legacy-bank:
+    build: ./legacy-bank
+    container_name: legacy-bank
+    hostname: legacy-bank
+    environment:
+      MAX_SETTLEMENT: ${MAX_SETTLEMENT:-20000}
+    volumes:
+      - ./infra/certs/legacy-bank.p12:/certs/legacy-bank.p12:ro
+      - ./infra/keys/private/legacy-bank-ed25519.pem:/keys/private/legacy-bank-ed25519.pem:ro
+      - ./infra/keys/public/coordinator-ed25519.pub.pem:/keys/public/coordinator-ed25519.pub.pem:ro
+      - legacy-data:/data          # fixed-width ledger (ledger.dat)
+    networks:
+      globalnet:
+        ipv4_address: 172.28.0.40
+        aliases: [legacy-bank.global.local]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/9443'"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+    restart: unless-stopped
+
   coordinator:
     build:
       context: .
@@ -221,11 +244,14 @@ services:
       TRUSTED_SIGNERS: api-1,api-2
     volumes:
       - ./infra/certs:/certs:ro
-      # Public keys only: it verifies signatures from api-1/api-2 (and legacy-bank, Phase 5).
+      # Public keys: verifies api-1/api-2 requests and the legacy bank's acknowledgements.
       - ./infra/keys/public:/keys/public:ro
+      # Its own private key: signs the settlement orders sent to the legacy bank.
+      - ./infra/keys/private/coordinator-ed25519.pem:/keys/private/coordinator-ed25519.pem:ro
       - audit:/audit
     depends_on:
       nfs: { condition: service_healthy }
+      legacy-bank: { condition: service_healthy }
       pg-core: { condition: service_healthy }
       pg-europa: { condition: service_healthy }
       pg-america: { condition: service_healthy }

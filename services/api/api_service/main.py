@@ -300,6 +300,8 @@ async def get_transfer(tx_id: uuid.UUID, claims: dict = Depends(current_claims))
         events = await (await conn.execute(
             "SELECT event, detail, at FROM tx_events WHERE tx_id = %s ORDER BY id", (tx_id,))).fetchall()
     tx.pop("request_signature", None)
+    # Money as decimal strings ("21150.00"), never floats.
+    tx = {k: (str(v) if isinstance(v, Decimal) else v) for k, v in tx.items()}
     return {**tx, "events": events}
 
 

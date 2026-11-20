@@ -1,14 +1,14 @@
 
 ══════ Cenário 02 — Transferência local (EU → EU) ══════
-(2026-11-19T23:39:46Z)
-  saldos antes: GS-EU-00000001=9776.57 EUR   GS-EU-00000002=4903.80 EUR
+(2026-11-19T23:58:17Z)
+  saldos antes: GS-EU-00000001=8821.21 EUR   GS-EU-00000002=4809.60 EUR
 
 ▶ 1. Ana transfere 50.00 EUR para o Bruno (mesmo shard: pg-europa)
   POST /auth/login -> HTTP 200
   POST /transfers -> HTTP 201 (X-Served-By: api-2)
   ✔ transferência confirmada (HTTP 201)
     {
-      "tx_id": "afbb3e3d-8a53-56a9-85d9-840825dd0f50",
+      "tx_id": "ec793521-345e-5436-bb84-c5d6b38b1965",
       "kind": "LOCAL",
       "state": "CONFIRMADA",
       "amount": "50.00",
@@ -18,12 +18,12 @@
     }
   ✔ kind=LOCAL: uma única transação no pg-europa
   linha temporal (sem PREPARE: não há 2PC):
-    23:39:47.012  INICIADA   {"kind":"LOCAL","amount":"50.00","signer":"api-2","fx_rate":"1","converted":"50.00","to_currency":"EUR","from_currency":"EUR"}
-    23:39:47.043  CONFIRMADA   {"shard":"EU"}
+    23:58:17.472  INICIADA   {"kind":"LOCAL","amount":"50.00","signer":"api-2","fx_rate":"1","converted":"50.00","to_currency":"EUR","from_currency":"EUR"}
+    23:58:17.498  CONFIRMADA   {"shard":"EU"}
 
 ▶ 2. Saldos depois
-  GS-EU-00000001: 9776.57 → 9726.57    GS-EU-00000002: 4903.80 → 4953.80
+  GS-EU-00000001: 8821.21 → 8771.21    GS-EU-00000002: 4809.60 → 4859.60
   ✔ débito e crédito aplicados atomicamente
 
 ══════ Cenário 02 concluído ══════
-(2026-11-19T23:39:47Z)
+(2026-11-19T23:58:17Z)

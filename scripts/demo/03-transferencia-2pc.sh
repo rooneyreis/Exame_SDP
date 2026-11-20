@@ -39,5 +39,26 @@ A_FROM=$(balance $FROM); A_TO=$(balance $TO)
 info "$FROM: $B_FROM → $A_FROM EUR    $TO: $B_TO → $A_TO USD"
 decimal_true "D('$B_FROM') - 100 == D('$A_FROM') and D('$B_TO') + 108 == D('$A_TO')" && ok "−100.00 EUR / +108.00 USD (taxa 1.08)" || fail "saldos errados"
 check_consistency
+pause
+
+step "5. Liquidação assíncrona no banco parceiro (legado Java, XML assinado com Ed25519)"
+for _ in $(seq 1 20); do
+  api GET "/transfers/$TX" >/dev/null
+  [[ "$(echo "$LAST_BODY" | jq -r .settlement_status)" != PENDENTE ]] && break; sleep 1
+done
+info "settlement_status: $(echo "$LAST_BODY" | jq -r .settlement_status)"
+echo "$LAST_BODY" | jq -r '.events[] | select(.event | startswith("LIQUIDACAO")) | "    \(.event)  \(.detail | tostring)"'
+[[ "$(echo "$LAST_BODY" | jq -r .settlement_status)" == ACEITE ]] && ok "o legado validou SHA-256 + assinatura e respondeu com um ack assinado" || fail "liquidação não aceite"
+info "log do legado:"
+docker logs legacy-bank 2>&1 | grep "$TX" | sed 's/^/    /'
+info "registo de largura fixa no ledger do mainframe (/data/ledger.dat, 121 colunas):"
+docker exec legacy-bank grep "$TX" /data/ledger.dat | sed 's/^/    /'
+info "    └─TxId(36)─────────────────────────┘└From(14)────┘└To(14)──────┘└Amount(15)───┘Cur└Converted(15)┘Cur└Timestamp(20)──────┘S"
+info "ordem em XML (GET /settlements do legado):"
+docker exec coordinator python -c "
+import ssl, urllib.request, re
+xml = urllib.request.urlopen('https://legacy-bank.global.local:9443/settlements', context=ssl.create_default_context(cafile='/certs/ca.crt')).read().decode()
+m = re.search(r'<Settlement>\s*<TxId>$TX</TxId>.*?</Settlement>', xml, re.S)
+print(m.group(0) if m else '(não encontrada)')" | sed 's/^/    /'
 
 title "Cenário 03 concluído"

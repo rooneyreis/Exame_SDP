@@ -23,4 +23,8 @@
 | Go | goroutines + canais | concorrência leve nativa, M:N scheduler |
 | C# | async/await sobre Task + thread pool | modelo semelhante ao asyncio, mas multi-core |
 
-(completar na Fase 5 com o executor do `HttpsServer` Java)
+## Java 21 no módulo legado
+
+- `HttpsServer.setExecutor(Executors.newVirtualThreadPerTaskExecutor())` (`legacy-bank/src/LegacyBank.java`): cada pedido corre numa **virtual thread**. O código é bloqueante e simples (ler o corpo, validar, escrever no ficheiro), mas milhares de threads virtuais custam pouca memória e a JVM multiplexa-as sobre poucas threads do SO.
+- Secção crítica explícita: `Ledger.append` é `synchronized`, para que dois pedidos simultâneos não intercalem bytes no mesmo registo de largura fixa. É o equivalente Java do `asyncio.Lock` da auditoria em Python.
+- Contraste: em Python a concorrência é cooperativa (um `await` cede o controlo); em Java as threads são preemptivas e correm em paralelo em vários núcleos, por isso o estado partilhado precisa de sincronização.

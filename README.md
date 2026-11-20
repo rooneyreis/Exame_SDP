@@ -2,7 +2,7 @@
 
 Plataforma distribuída de transações financeiras internacionais (Exame Prático de Sistemas Distribuídos e Paralelos — ISUTC, LECC 31).
 
-> Em construção, por fases. Estado atual: **Fase 4 — Coordenador 2PC** concluída.
+> Em construção, por fases. Estado atual: **Fase 5 — Legado Java** concluída.
 
 ## Requisitos
 
@@ -15,7 +15,7 @@ Plataforma distribuída de transações financeiras internacionais (Exame Práti
 ```bash
 ./scripts/gen-certs.sh   # CA local + certificado TLS por serviço (infra/certs, não versionado)
 ./scripts/gen-keys.sh    # RS256 (JWT), Ed25519 (assinaturas), AES-256 (dados em repouso) — infra/keys
-docker compose up -d     # NFS, 5 nós PostgreSQL, auth, coordinator, api-1, api-2, nginx
+docker compose up -d     # NFS, 5 nós PostgreSQL, auth, legacy-bank, coordinator, api-1, api-2, nginx
 ./scripts/seed.sh        # câmbios, 3 contas por shard, staff e 6 clientes
 make test                # suite de testes (unitários + integração)
 ```
@@ -185,6 +185,40 @@ Respostas: `201` CONFIRMADA, `200` repetição idempotente, `202` decisão tomad
 
 `GET /admin/consistency` (auditor/admin): cada transação `CONFIRMADA` tem exatamente 1 débito e 1 crédito nos shards certos, as `ABORTADA` não têm movimentos, não há movimentos órfãos nem transações preparadas penduradas.
 
+## Módulo legado: Banco Parceiro (Java 21, XML)
+
+`legacy-bank/src/` simula o mainframe do banco parceiro, **sem frameworks**: `com.sun.net.httpserver.HttpsServer` (TLS com keystore PKCS12 da CA local), `javax.xml` DOM e `java.security` (Ed25519). Compilado com `javac` num build multi-stage (`eclipse-temurin:21-jdk` → `21-jre`). Cada pedido corre numa *virtual thread* do Java 21.
+
+| Endpoint | Descrição |
+|---|---|
+| `POST /settlement` | recebe `<SettlementOrder>` assinado, responde `<SettlementAck>` assinado (`ACEITE`/`REJEITADA`) |
+| `GET /settlements` | ordens aceites, em XML |
+
+Contrato de interoperabilidade (Python ↔ Java):
+
+```xml
+<SettlementOrder version="1.0">
+  <TxId>dca0276b-…</TxId> <FromIban>GS-EU-00000001</FromIban> <ToIban>GS-AM-00000001</ToIban>
+  <Amount currency="EUR">100.00</Amount> <ConvertedAmount currency="USD">108.00</ConvertedAmount>
+  <Timestamp>2026-11-19T23:54:50Z</Timestamp>
+  <Sha256>…</Sha256> <Signature alg="Ed25519">…</Signature>
+</SettlementOrder>
+```
+
+- `Sha256` e `Signature` são calculados sobre uma **string canónica** dos campos (`SettlementOrder|1.0|TxId|From|To|Amount|Cur|Converted|Cur|Timestamp`), igual nos dois lados. A assinatura não depende da formatação do XML, que o ElementTree (Python) e o DOM (Java) produzem de forma diferente. É uma alternativa simples à canonicalização XML-DSig.
+- O legado verifica o SHA-256 e a assinatura do coordenador; o coordenador verifica o SHA-256 e a assinatura do ack do legado.
+- Parser DOM **endurecido contra XXE**: DOCTYPE proibido, entidades externas desligadas, `FEATURE_SECURE_PROCESSING`. Corpo máximo de 64 KiB.
+- Regra do banco: ordens com `ConvertedAmount > MAX_SETTLEMENT` (20 000) são `REJEITADA`.
+- **Ledger de largura fixa** (`/data/ledger.dat`, estilo copybook COBOL, 121 colunas por registo; os montantes em cêntimos sem ponto decimal):
+
+```
+dca0276b-d89b-5c3d-ac71-3171e6284dc0GS-EU-00000001GS-AM-00000001000000000010000EUR000000000010800USD2026-11-19T23:54:50ZA
+└─TxId(36)─────────────────────────┘└From(14)────┘└To(14)──────┘└Amount(15)───┘Cur└Converted(15)┘Cur└Timestamp(20)──────┘S
+```
+
+- **Liquidação assíncrona**: quando uma transferência `DISTRIBUIDA` fica `CONFIRMADA`, `settlement_status = PENDENTE` e o coordenador envia a ordem numa tarefa em segundo plano (o cliente não espera). Resposta → `ACEITE` ou `REJEITADA`. Se o legado estiver em baixo, fica `PENDENTE` e o recovery loop volta a tentar. O legado é idempotente por `TxId`.
+- A rejeição da liquidação não desfaz a transferência (que já está confirmada nos shards): fica registada para tratamento posterior (em produção: estorno/compensação).
+
 ## Auditoria (NFS)
 
 Cada nó escreve em `/audit/<AAAA-MM-DD>/<nó>.log` (JSON Lines). Cada linha tem `prev_hash` e `hash = SHA-256(prev_hash + JSON canónico da linha)`: alterar, apagar ou reordenar uma linha parte a cadeia a partir daí (`common/audit.py`, validação na Fase 6).
@@ -208,6 +242,7 @@ A saída de cada cenário fica em `docs/evidencias/<cenário>.log`.
 
 ## Limitações conhecidas (parcial)
 
+- Liquidação `REJEITADA` não gera compensação automática (o dinheiro já foi movido entre shards); em produção seria uma Saga de estorno.
 - **Coordenador 2PC é ponto único de falha temporário**: enquanto está em baixo, as transferências distribuídas ficam bloqueadas (e os shards mantêm os locks das preparadas), mas **nunca inconsistentes**, graças ao log durável e à recuperação. Em produção: coordenador replicado (consenso Raft) ou padrão Saga.
 - O 2PC bloqueia: entre o PREPARE e a decisão, as contas envolvidas ficam com lock. A Saga trocaria isto por consistência eventual com compensações.
 

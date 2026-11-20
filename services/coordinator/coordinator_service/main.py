@@ -12,23 +12,25 @@ there BEFORE acting on it. The commit of DECISAO_COMMIT is THE decision point:
 import asyncio
 import json
 import os
+import ssl
 import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from decimal import Decimal
 
+import httpx
 import psycopg
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from psycopg.rows import dict_row
 
 from common.audit import AuditLog
-from common.crypto import check_signed_request, load_trusted_signers
+from common.crypto import check_signed_request, load_ed25519_private, load_ed25519_public, load_trusted_signers
 from common.db import REGIONS, make_pool, region_of_iban, shard_conninfo
 from common.logging import add_request_logging, log_extra, setup_logging, tx_id_var
 
-from . import logic
+from . import logic, settlement
 from .config import settings
 
 log = setup_logging("coordinator")
@@ -39,6 +41,14 @@ core = make_pool(
     f"host=pg-core.global.local dbname=coordinator user={settings.db_user} password={settings.db_password} "
     f"sslmode=verify-full sslrootcert={settings.ca_file} connect_timeout=3", max_size=20)
 SHARD_DSN = {r: shard_conninfo(r, settings.db_user, settings.db_password, settings.ca_file) for r in REGIONS}
+
+# Settlement with the legacy partner bank (Java): our signing key + the bank's public key.
+SIGNING_KEY = load_ed25519_private(settings.signing_key)
+LEGACY_PUBLIC_KEY = load_ed25519_public(settings.legacy_public_key)
+legacy = httpx.AsyncClient(base_url=settings.legacy_url, timeout=10,
+                           verify=ssl.create_default_context(cafile=settings.ca_file))
+settling: set[str] = set()             # settlements being sent right now
+background: set[asyncio.Task] = set()  # keeps references so tasks are not garbage-collected
 
 # Transactions being executed by THIS process right now. The recovery loop never touches
 # them (e.g. a transaction paused by pause_after_prepare is not abandoned, only slow).
@@ -90,9 +100,11 @@ async def event(tx_id, name: str, **detail) -> None:
 async def set_state(tx_id, state: str, reason: str | None = None, **detail) -> None:
     """Commits the new state in pg-core (durable) and records the event."""
     async with core.connection() as conn:
+        # A confirmed DISTRIBUTED transfer must then be settled with the partner bank.
         await conn.execute(
-            "UPDATE transactions SET state = %s, failure_reason = COALESCE(%s, failure_reason), "
-            "updated_at = now() WHERE tx_id = %s", (state, reason, tx_id))
+            "UPDATE transactions SET state = %s, failure_reason = COALESCE(%s, failure_reason), updated_at = now(), "
+            "settlement_status = CASE WHEN %s = 'CONFIRMADA' AND kind = 'DISTRIBUIDA' AND settlement_status = 'N/A' "
+            "THEN 'PENDENTE' ELSE settlement_status END WHERE tx_id = %s", (state, reason, state, tx_id))
     await event(tx_id, state, **({"reason": reason} if reason else {}), **detail)
 
 
@@ -371,10 +383,66 @@ async def process_transfer(payload: dict, headers) -> JSONResponse:
         in_flight.discard(payload["tx_id"])
 
     view = await tx_view(tx["tx_id"])
+    if view["settlement_status"] == "PENDENTE":
+        start_settlement(payload["tx_id"])     # asynchronous: the client does not wait for it
     await audit.write("TRANSFERENCIA", tx_id=payload["tx_id"], kind=tx["kind"], state=view["state"],
                       from_iban=tx["from_iban"], to_iban=tx["to_iban"], amount=str(amount),
                       currency=tx["from_currency"], reason=view.get("failure_reason"))
     return response_for(view)
+
+
+# --- Settlement with the legacy bank (asynchronous) ----------------------------------------
+
+def start_settlement(tx_id: str) -> None:
+    task = asyncio.create_task(settle(tx_id))
+    background.add(task)
+    task.add_done_callback(background.discard)
+
+
+async def settle(tx_id: str) -> None:
+    """Sends the signed XML order and records the bank's signed answer.
+    On network failure the status stays PENDENTE and the recovery loop retries."""
+    if tx_id in settling:
+        return
+    settling.add(tx_id)
+    try:
+        tx = await load_tx(tx_id)
+        if tx is None or tx["settlement_status"] != "PENDENTE":
+            return
+        timestamp = settlement.utc_timestamp()
+        xml = settlement.build_order_xml(tx, timestamp, SIGNING_KEY)
+        try:
+            response = await legacy.post("/settlement", content=xml,
+                                         headers={"Content-Type": "application/xml; charset=utf-8"})
+        except httpx.HTTPError as exc:
+            log.warning(f"banco parceiro indisponível ({type(exc).__name__}); liquidação fica PENDENTE",
+                        extra=log_extra(tx_id=tx_id))
+            return
+        ack = settlement.parse_ack(response.content)
+        ok, reason = settlement.verify_ack(ack, LEGACY_PUBLIC_KEY)
+        if not ok or ack["tx_id"] != tx_id:
+            await event(tx_id, "LIQUIDACAO_ACK_INVALIDO", reason=reason if not ok else "tx_id diferente")
+            await audit.write("ADULTERACAO_DETETADA", tx_id=tx_id, reason=f"ack do legado: {reason}")
+            return
+        async with core.connection() as conn:
+            await conn.execute("UPDATE transactions SET settlement_status = %s, updated_at = now() "
+                               "WHERE tx_id = %s AND settlement_status = 'PENDENTE'", (ack["status"], tx_id))
+        await event(tx_id, f"LIQUIDACAO_{ack['status']}", reason=ack["reason"], http=response.status_code,
+                    bank_timestamp=ack["timestamp"])
+        await audit.write("LIQUIDACAO", tx_id=tx_id, status=ack["status"], reason=ack["reason"])
+    except Exception as exc:
+        log.warning(f"liquidação falhou: {exc!r}", extra=log_extra(tx_id=tx_id))
+    finally:
+        settling.discard(tx_id)
+
+
+async def retry_pending_settlements() -> None:
+    async with core.connection() as conn:
+        rows = await (await conn.execute(
+            "SELECT tx_id FROM transactions WHERE settlement_status = 'PENDENTE' "
+            "AND updated_at < now() - interval '5 seconds' ORDER BY updated_at LIMIT 20")).fetchall()
+    for row in rows:
+        await settle(str(row["tx_id"]))
 
 
 # --- Recovery loop (presumed abort) -------------------------------------------------------
@@ -488,6 +556,7 @@ async def recovery_loop() -> None:
     while True:
         try:
             await recovery_pass()
+            await retry_pending_settlements()
         except Exception as exc:
             log.warning(f"recovery pass falhou: {exc!r}")
         await asyncio.sleep(settings.recovery_interval)

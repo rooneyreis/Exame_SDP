@@ -18,6 +18,11 @@ class Settings:
     participant_timeout: float = float(os.environ.get("PARTICIPANT_TIMEOUT_SECONDS", "10"))
     recovery_interval: float = float(os.environ.get("RECOVERY_INTERVAL_SECONDS", "5"))
 
+    # Settlement with the partner bank (legacy, Java/XML)
+    legacy_url: str = os.environ.get("LEGACY_URL", "https://legacy-bank.global.local:9443")
+    signing_key: str = os.environ.get("SIGNING_KEY", "/keys/private/coordinator-ed25519.pem")
+    legacy_public_key: str = os.environ.get("LEGACY_PUBLIC_KEY", "/keys/public/legacy-bank-ed25519.pub.pem")
+
     # Fault injection defaults (also settable at runtime with POST /admin/chaos)
     chaos_pause_after_prepare: int = int(os.environ.get("CHAOS_PAUSE_AFTER_PREPARE", "0"))
     chaos_crash_after_prepare: bool = _bool("CHAOS_CRASH_AFTER_PREPARE")

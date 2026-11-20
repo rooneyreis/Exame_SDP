@@ -1,14 +1,14 @@
 
 ══════ Cenário 03 — Transferência distribuída com 2PC (EU/EUR → AM/USD) ══════
-(2026-11-19T23:39:47Z)
-  saldos antes: GS-EU-00000001=9726.57 EUR (pg-europa)   GS-AM-00000001=10201.77 USD (pg-america)
+(2026-11-19T23:58:17Z)
+  saldos antes: GS-EU-00000001=8771.21 EUR (pg-europa)   GS-AM-00000001=10511.54 USD (pg-america)
 
 ▶ 1. Ana (EU) transfere 100.00 EUR para o David (AM)
   POST /auth/login -> HTTP 200
   POST /transfers -> HTTP 201 (X-Served-By: api-1)
   ✔ transferência confirmada (HTTP 201)
     {
-      "tx_id": "67cde291-6a1e-5a23-b5d7-58f77d115447",
+      "tx_id": "06aaf554-52b6-510d-823e-37afd1937eb3",
       "kind": "DISTRIBUIDA",
       "state": "CONFIRMADA",
       "amount": "100.00",
@@ -19,14 +19,14 @@
     }
 
 ▶ 2. Linha temporal do 2PC (tabela tx_events no log do coordenador)
-    23:39:47.844  INICIADA   {"kind":"DISTRIBUIDA","amount":"100.00","signer":"api-1","fx_rate":"1.08000000","converted":"108.00","to_currency":"USD","from_currency":"EUR"}
-    23:39:47.849  PREPARANDO
-    23:39:47.871  PREPARADO_EU   {"iban":"GS-EU-00000001","side":"DEBITO"}
-    23:39:47.891  PREPARADO_AM   {"iban":"GS-AM-00000001","side":"CREDITO"}
-    23:39:47.897  DECISAO_COMMIT
-    23:39:47.901  COMMIT_EU
-    23:39:47.906  COMMIT_AM
-    23:39:47.912  CONFIRMADA
+    23:58:18.315  INICIADA   {"kind":"DISTRIBUIDA","amount":"100.00","signer":"api-1","fx_rate":"1.08000000","converted":"108.00","to_currency":"USD","from_currency":"EUR"}
+    23:58:18.321  PREPARANDO
+    23:58:18.344  PREPARADO_EU   {"iban":"GS-EU-00000001","side":"DEBITO"}
+    23:58:18.366  PREPARADO_AM   {"iban":"GS-AM-00000001","side":"CREDITO"}
+    23:58:18.372  DECISAO_COMMIT
+    23:58:18.377  COMMIT_EU
+    23:58:18.383  COMMIT_AM
+    23:58:18.390  CONFIRMADA
   
   Fase 1: cada shard faz BEGIN … UPDATE … PREPARE TRANSACTION e vota SIM (PREPARADO_*)
   Ponto de decisão: DECISAO_COMMIT gravada (commit) no pg-core ANTES de qualquer COMMIT PREPARED
@@ -34,17 +34,17 @@
 
 ▶ 3. Os movimentos, vistos diretamente em cada Postgres
   pg-europa (débito em EUR):
-  $ psql "host=pg-europa.global.local,pg-europa-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT iban, type, amount, currency, balance_after FROM movements WHERE tx_id = '67cde291-6a1e-5a23-b5d7-58f77d115447'"
+  $ psql "host=pg-europa.global.local,pg-europa-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT iban, type, amount, currency, balance_after FROM movements WHERE tx_id = '06aaf554-52b6-510d-823e-37afd1937eb3'"
           iban      |  type  | amount | currency | balance_after 
     ----------------+--------+--------+----------+---------------
-     GS-EU-00000001 | DEBITO | 100.00 | EUR      |       9626.57
+     GS-EU-00000001 | DEBITO | 100.00 | EUR      |       8671.21
     (1 row)
     
   pg-america (crédito em USD, já convertido):
-  $ psql "host=pg-america.global.local,pg-america-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT iban, type, amount, currency, balance_after FROM movements WHERE tx_id = '67cde291-6a1e-5a23-b5d7-58f77d115447'"
+  $ psql "host=pg-america.global.local,pg-america-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT iban, type, amount, currency, balance_after FROM movements WHERE tx_id = '06aaf554-52b6-510d-823e-37afd1937eb3'"
           iban      |  type   | amount | currency | balance_after 
     ----------------+---------+--------+----------+---------------
-     GS-AM-00000001 | CREDITO | 108.00 | USD      |      10309.77
+     GS-AM-00000001 | CREDITO | 108.00 | USD      |      10619.54
     (1 row)
     
   nenhuma transação ficou preparada (pendurada):
@@ -52,11 +52,30 @@
   pg-america: nenhuma
 
 ▶ 4. Saldos depois
-  GS-EU-00000001: 9726.57 → 9626.57 EUR    GS-AM-00000001: 10201.77 → 10309.77 USD
+  GS-EU-00000001: 8771.21 → 8671.21 EUR    GS-AM-00000001: 10511.54 → 10619.54 USD
   ✔ −100.00 EUR / +108.00 USD (taxa 1.08)
   GET /admin/consistency -> HTTP 200 (X-Served-By: api-2)
-    {"ok":true,"checked_transactions":80,"confirmed":72,"aborted":8,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[]},"problems":[]}
+    {"ok":true,"checked_transactions":156,"confirmed":144,"aborted":12,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[]},"problems":[]}
   ✔ /admin/consistency OK: sem dinheiro perdido nem duplicado
 
+▶ 5. Liquidação assíncrona no banco parceiro (legado Java, XML assinado com Ed25519)
+  settlement_status: ACEITE
+    LIQUIDACAO_ACEITE  {"http":200,"reason":"registada no ledger","bank_timestamp":"2026-11-19T23:58:18Z"}
+  ✔ o legado validou SHA-256 + assinatura e respondeu com um ack assinado
+  log do legado:
+    2026-11-19T23:58:18Z [legacy-bank] ordem 06aaf554-52b6-510d-823e-37afd1937eb3 ACEITE 100.00 EUR -> 108.00 USD
+  registo de largura fixa no ledger do mainframe (/data/ledger.dat, 121 colunas):
+    06aaf554-52b6-510d-823e-37afd1937eb3GS-EU-00000001GS-AM-00000001000000000010000EUR000000000010800USD2026-11-19T23:58:18ZA
+      └─TxId(36)─────────────────────────┘└From(14)────┘└To(14)──────┘└Amount(15)───┘Cur└Converted(15)┘Cur└Timestamp(20)──────┘S
+  ordem em XML (GET /settlements do legado):
+    <Settlement>
+        <TxId>06aaf554-52b6-510d-823e-37afd1937eb3</TxId>
+        <FromIban>GS-EU-00000001</FromIban>
+        <ToIban>GS-AM-00000001</ToIban>
+        <Amount currency="EUR">100.00</Amount>
+        <ConvertedAmount currency="USD">108.00</ConvertedAmount>
+        <Timestamp>2026-11-19T23:58:18Z</Timestamp>
+      </Settlement>
+
 ══════ Cenário 03 concluído ══════
-(2026-11-19T23:39:51Z)
+(2026-11-19T23:58:22Z)
