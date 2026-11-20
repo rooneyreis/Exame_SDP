@@ -117,7 +117,21 @@ svg.i { width: 1.15em; height: 1.15em; flex: none; stroke: currentColor; fill: n
 .nav a:hover { background: var(--surface-sunken); color: var(--ink); text-decoration: none; }
 .nav a:active { transform: scale(0.985); }
 .nav a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-.sidebar-foot { margin-top: auto; padding-top: 16px; border-top: 1px solid var(--line); }
+.sidebar-foot { margin-top: auto; padding-top: 16px; border-top: 1px solid var(--line); flex: none; }
+/* A lista de navegação rola dentro da barra lateral; a marca (topo) e o utilizador/terminar
+   sessão (fundo) ficam sempre visíveis, por muitos itens que o perfil tenha. */
+.sidebar { overflow: hidden; }
+.sidebar .brand { flex: none; }
+.sidebar .nav { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  margin: 0 -8px; padding: 0 8px 12px; scrollbar-width: thin; }
+.sidebar .nav::-webkit-scrollbar { width: 6px; }
+.sidebar .nav::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 3px; }
+@media (max-height: 820px) {
+  .sidebar { padding-top: 16px; padding-bottom: 14px; }
+  .sidebar .brand { padding-bottom: 12px; }
+  .nav-label { padding: 10px 12px 4px; }
+  .nav a { padding: 7px 12px; }
+}
 .user-chip { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 12px; }
 .avatar { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; flex: none;
   background: linear-gradient(140deg, #dfe7f3, #c9d6ea); color: var(--brand); font-weight: 650; font-size: 0.85rem; }
