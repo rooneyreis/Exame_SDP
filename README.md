@@ -10,7 +10,9 @@ Clientes da Europa, da América e de África têm os dados em **nós de base de 
 | Processamento e Transações | coordenador 2PC (`services/coordinator`), shards PostgreSQL com réplicas e failover |
 | Serviços Web e Interoperabilidade | API REST FastAPI + banco parceiro em Java 21 com XML assinado; análise OMG/OMA |
 | Segurança | TLS em tudo, JWT RS256 descentralizado, Ed25519 + SHA-256, AES-256-GCM em repouso, Argon2id |
-| Documentação e Defesa | este README, [`docs/relatorio/`](docs/relatorio/README.md), 14 cenários de demo com evidências |
+| Documentação e Defesa | este README, [`docs/relatorio/`](docs/relatorio/README.md), 17 cenários (00–16) de demo com evidências |
+
+Mapa de cada ponto que o docente espera ver → código → evidência: [`docs/relatorio/00-requisitos-do-docente.md`](docs/relatorio/00-requisitos-do-docente.md).
 
 ## Índice
 
@@ -67,7 +69,7 @@ git clone https://github.com/rooneyreis/Exame_SDP.git ~/global-scale-system && c
 docker compose up -d --wait   # 14 contentores
 ./scripts/seed.sh             # câmbios, 3 contas por shard, staff e 9 clientes
 make test                     # testes unitários + integração (~5 min)
-./scripts/demo/run-all.sh     # os 15 cenários de demonstração (~5 min)
+./scripts/demo/run-all.sh     # os 17 cenários de demonstração (~6 min)
 ```
 
 Documentação interativa da API: `https://localhost/docs` (OpenAPI gerada pelo FastAPI).
@@ -404,6 +406,7 @@ Cada script imprime o que vai fazer, executa com `curl --cacert infra/certs/ca.c
 
 | Script | Demonstra |
 |---|---|
+| `00-rede-dns.sh` | SO e kernel de cada nó, IPs fixos e portas, resolução DNS `*.global.local`, ligação TCP entre todos os nós |
 | `01-registo-login.sh` | registo EU e AM → pendente → KYC → conta **no shard certo** (consulta direta a cada Postgres) → login → JWT |
 | `02-transferencia-local.sh` | EU → EU, `kind=LOCAL` (uma transação, sem 2PC) |
 | `03-transferencia-2pc.sh` | EU/EUR → AM/USD com câmbio; linha temporal do 2PC; liquidação no legado e registo no ledger |
@@ -415,10 +418,11 @@ Cada script imprime o que vai fazer, executa com `curl --cacert infra/certs/ca.c
 | `09-queda-durante-2pc.sh` | `docker stop pg-america` entre o PREPARE e o COMMIT → recovery conclui quando volta |
 | `10-crash-coordenador.sh` | coordenador morre depois da decisão → reinicia sozinho → `COMMIT PREPARED` pela recuperação |
 | `11-concorrencia.sh` | 50 transferências concorrentes → 0 deadlocks, dinheiro conservado ao cêntimo |
-| `12-tls.sh` | Postgres sem TLS, HTTP simples, TLS 1.1 e certificado de outro nó → tudo recusado |
+| `12-tls.sh` | Postgres sem TLS, HTTP simples (nginx, api, auth, coordinator, legado Java), TLS 1.1 e certificado de outro nó → tudo recusado |
 | `13-particao-rede.sh` | `docker network disconnect` do pg-america depois e antes do PREPARE → commit concluído / abort sem débito |
 | `14-regiao-africa.sh` | região África: registo AF → KYC → conta GS-AF em MZN no pg-africa; AF → AF local; 2PC EU → AF (EUR → MZN) e AF → AM (ordem EU → AM → AF); `fail_participant=AF` → rollback da Europa; failover e failback do shard África |
 | `15-contas-multiplas.sh` | cliente registado na Europa pede uma conta em África → o operador aprova (aprovar outra vez não duplica) → a conta só existe no pg-africa → transferência entre contas próprias EU → AF (2PC + câmbio, não conta para o limite) → um envio a terceiros atualiza `/me/limits` |
+| `16-dfs-nfs.sh` | `/audit` montado por NFS v4 em 4 nós; ficheiro escrito num nó lido nos outros; logs de auditoria por nó e relatório partilhado lidos do NFS |
 
 ```bash
 ./scripts/demo/run-all.sh                 # todos, por ordem
@@ -504,7 +508,7 @@ global-scale-system/
 │   └── keys/                   # gerado por gen-keys.sh (não versionado)
 ├── scripts/
 │   ├── gen-certs.sh, gen-keys.sh, seed.sh, migrate.sh, failover.sh, test.sh, deploy.sh, rbac-smoke.sh
-│   └── demo/                   # 15 cenários + run-all.sh + lib.sh + concurrency.py
+│   └── demo/                   # 17 cenários (00–16) + run-all.sh + lib.sh + concurrency.py
 ├── tests/
 │   ├── unit/                   # lógica pura, sem Docker
 │   └── integration/            # contra o ambiente a correr

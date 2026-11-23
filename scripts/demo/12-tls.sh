@@ -5,7 +5,7 @@ source "$(dirname "$0")/lib.sh"
 title "Cenário 12 — TLS obrigatório em todos os canais"
 
 step "1. PostgreSQL sem TLS (sslmode=disable) → recusado pelo pg_hba.conf"
-for node in pg-core pg-europa pg-america; do
+for node in pg-core pg-europa pg-america pg-africa; do
   out=$(docker compose run --rm -T pgclient "host=$node.global.local dbname=postgres sslmode=disable" -c "select 1" 2>&1 | grep -o 'no encryption' || true)
   [[ "$out" == "no encryption" ]] && ok "$node: ligação sem TLS rejeitada (\"no encryption\")" || fail "$node aceitou sem TLS"
 done
@@ -44,7 +44,27 @@ except Exception as e:
     print('recusado:', type(e).__name__)" | sed 's/^/    /' | tee /tmp/tls12.out
 grep -q recusado /tmp/tls12.out && ok "api-2 recusou HTTP sem TLS" || fail "api-2 aceitou HTTP"
 
-step "7. Protocolos e cadeia de certificados no nginx"
+step "7. Serviços internos (auth, coordinator, banco legado Java): só TLS, verificado pela CA local"
+cmd "docker exec coordinator python  (HTTP simples e depois HTTPS a cada serviço)"
+docker exec coordinator python -c "
+import socket, ssl, urllib.request
+ctx = ssl.create_default_context(cafile='/certs/ca.crt')
+for name, port in [('auth', 8010), ('coordinator', 8020), ('legacy-bank', 9443)]:
+    host = name + '.global.local'
+    try:
+        urllib.request.urlopen(f'http://{host}:{port}/', timeout=3); plain = 'ACEITE'
+    except Exception as e:
+        plain = 'recusado (' + type(e).__name__ + ')'
+    with socket.create_connection((host, port), timeout=3) as raw:
+        with ctx.wrap_socket(raw, server_hostname=host) as s:
+            cn = dict(x[0] for x in s.getpeercert()['subject'])['commonName']
+            print(f'    {host:28s} HTTP: {plain:28s} TLS: {s.version()} {s.cipher()[0]}  cert CN={cn}')
+" | tee /tmp/tls12b.out
+! grep -q ACEITE /tmp/tls12b.out && ok "nenhum serviço interno aceita texto simples; o legado Java fala TLS com certificado da CA" \
+  || fail "um serviço interno aceitou HTTP simples"
+pause
+
+step "8. Protocolos e cadeia de certificados no nginx"
 cmd "openssl s_client -connect localhost:443 -CAfile $CA"
 echo | openssl s_client -connect localhost:443 -servername localhost -CAfile "$CA" 2>/dev/null \
   | grep -E "^(subject|issuer)=|Protocol|Verify return code" | sed 's/^ *//; s/^/    /'

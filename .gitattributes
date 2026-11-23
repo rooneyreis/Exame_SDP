@@ -1,0 +1,6 @@
+# Os scripts e ficheiros de configuração correm dentro de contentores Linux:
+# têm de manter finais de linha LF mesmo num clone feito no Windows (core.autocrlf=true).
+* text=auto eol=lf
+*.docx binary
+*.png binary
+*.p12 binary

@@ -6,6 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 SCENARIOS=(
+  00-rede-dns
   01-registo-login
   02-transferencia-local
   03-transferencia-2pc
@@ -21,6 +22,7 @@ SCENARIOS=(
   13-particao-rede
   14-regiao-africa
   15-contas-multiplas
+  16-dfs-nfs
 )
 
 start=$(date +%s)

@@ -4,6 +4,7 @@ Rascunhos em Markdown das secções do relatório (PDF) pedido no enunciado. Cad
 
 | Ficheiro | Conteúdo | Parte do enunciado |
 |---|---|---|
+| [00-requisitos-do-docente.md](00-requisitos-do-docente.md) | cada ponto do que o docente espera ver → código → evidência | todas |
 | [01-arquitetura.md](01-arquitetura.md) | diagrama, nós, IPs, DNS, fluxo de uma transferência | Parte 1 + entregáveis |
 | [02-centralizado-vs-distribuido.md](02-centralizado-vs-distribuido.md) | latência, ponto único de falha, escalabilidade; CAP; transparências | Parte 1 |
 | [03-so-distribuido-e-dfs.md](03-so-distribuido-e-dfs.md) | NFS v4: transparência de localização, locks, cache, relatório partilhado | Parte 1 |
