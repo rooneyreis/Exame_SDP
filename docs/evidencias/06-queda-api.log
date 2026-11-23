@@ -1,6 +1,6 @@
 
 ══════ Cenário 06 — Queda de uma instância da API ══════
-(2026-11-20T13:21:35Z)
+(2026-11-23T22:06:41Z)
   POST /auth/login -> HTTP 200
 
 ▶ 1. Situação normal: o nginx distribui os pedidos (round-robin)
@@ -22,8 +22,8 @@
   ✔ todos os pedidos responderam 200: 6×api-2 
   logs do nginx: o 1.º pedido tentou a api-1 (172.28.0.11), falhou e foi repetido na api-2 (172.28.0.12);
   depois disso a api-1 fica marcada em baixo durante fail_timeout=10s e nem é tentada:
-    2026/11/20 13:21:39 [error] 30#30: *353 upstream timed out (110: Operation timed out) while connecting to upstream, client: 172.28.0.192, server: nginx.global.local, request: "GET /accounts HTTP/1.1", upstream: "https://172.28.0.11:8000/accounts", host: "localhost"
-    {"ts":"2026-11-20T13:21:39+00:00","service":"nginx","request_id":"5bf315d6b9a6f9da803b1393c0bf4663","method":"GET","uri":"/accounts","status":200,"upstream":"172.28.0.11:8000, 172.28.0.12:8000","upstream_status":"504, 200","ms":2.015}
+    2026/11/23 22:06:44 [error] 30#30: *270 upstream timed out (110: Operation timed out) while connecting to upstream, client: 172.28.0.192, server: nginx.global.local, request: "GET /accounts HTTP/1.1", upstream: "https://172.28.0.11:8000/accounts", host: "localhost"
+    {"ts":"2026-11-23T22:06:44+00:00","service":"nginx","request_id":"d17fddc5492a1f28566865aa583a0092","method":"GET","uri":"/accounts","status":200,"upstream":"172.28.0.11:8000, 172.28.0.12:8000","upstream_status":"504, 200","ms":2.022}
 
 ▶ 3. Voltar a ligar a api-1
   $ docker start api-1
@@ -37,4 +37,4 @@
   ✔ respostas: 2×api-1 4×api-2 
 
 ══════ Cenário 06 concluído: nenhum pedido falhou ══════
-(2026-11-20T13:21:55Z)
+(2026-11-23T22:07:00Z)

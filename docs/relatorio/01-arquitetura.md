@@ -16,9 +16,11 @@ flowchart TB
     CO --> PC
     CO -- 2PC --> PE[(pg-europa<br/>172.28.0.61)]
     CO -- 2PC --> PA[(pg-america<br/>172.28.0.63)]
-    A1 & A2 --> PE & PA
+    CO -- 2PC --> PF[(pg-africa<br/>172.28.0.65)]
+    A1 & A2 --> PE & PA & PF
     PE -- streaming WAL/TLS --> PER[(pg-europa-replica<br/>172.28.0.62)]
     PA -- streaming WAL/TLS --> PAR[(pg-america-replica<br/>172.28.0.64)]
+    PF -- streaming WAL/TLS --> PFR[(pg-africa-replica<br/>172.28.0.66)]
     NFS[[nfs NFS-Ganesha<br/>172.28.0.50<br/>/audit]]
     AU & A1 & A2 & CO -. NFS v4 .-> NFS
 ```
@@ -38,6 +40,7 @@ flowchart TB
 | pg-core | .60 | 5432 | PostgreSQL 16 | BD `auth` e BD `coordinator` | utilizadores, log 2PC |
 | pg-europa (+réplica) | .61 (.62) | 5432 | PostgreSQL 16 | shard Europa | contas `GS-EU-*` |
 | pg-america (+réplica) | .63 (.64) | 5432 | PostgreSQL 16 | shard América | contas `GS-AM-*` |
+| pg-africa (+réplica) | .65 (.66) | 5432 | PostgreSQL 16 | shard África | contas `GS-AF-*`; custódia de outras regiões em baixo |
 
 ## Rede
 

@@ -1,6 +1,6 @@
 
 ══════ Cenário 00 — Ambiente de rede e SO: IPs, portas, DNS local e conectividade ══════
-(2026-11-23T21:58:11Z)
+(2026-11-23T22:06:20Z)
 
 ▶ 1. Nós Linux: sistema operativo e kernel de cada contentor
     nginx                Alpine Linux v3.21                     Linux 6.18.58.1-microsoft-standard-WSL2
@@ -93,4 +93,4 @@ nginx	0.0.0.0:443->443/tcp, [::]:443->443/tcp
   ✔ https://localhost/health responde (via nginx) (HTTP 200)
 
 ══════ Cenário 00 concluído ══════
-(2026-11-23T21:58:15Z)
+(2026-11-23T22:06:25Z)

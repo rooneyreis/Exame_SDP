@@ -1,19 +1,19 @@
 
 ══════ Cenário 01 — Registo, KYC, conta no shard certo e login ══════
-(2026-11-20T13:21:22Z)
+(2026-11-23T22:06:25Z)
 
 ▶ 1. Registo de um cliente da Europa e de um cliente da América
   POST /auth/register -> HTTP 201
   ✔ cliente EU registado (HTTP 201)
     {
-      "id": "9ae83eab-6366-4dfc-9a87-c7800a178838",
+      "id": "0718af52-4b4c-4727-b8ed-720730873966",
       "status": "PENDENTE_VERIFICACAO",
       "region": "EU"
     }
   POST /auth/register -> HTTP 201
   ✔ cliente AM registado (HTTP 201)
     {
-      "id": "fa935763-634a-4c52-8585-3934b122e5a9",
+      "id": "3e048cdc-a941-4fa6-9558-3ff40e7476a6",
       "status": "PENDENTE_VERIFICACAO",
       "region": "AM"
     }
@@ -24,56 +24,58 @@
     "conta não ativa (estado: PENDENTE_VERIFICACAO)"
 
 ▶ 3. Na BD, o documento de identificação está cifrado (AES-256-GCM)
-  $ psql "host=pg-core.global.local dbname=auth" -c "SELECT email, status, encode(substr(document_id_enc,1,24),'hex') AS document_id_enc FROM users WHERE id = '9ae83eab-6366-4dfc-9a87-c7800a178838'"
+  $ psql "host=pg-core.global.local dbname=auth" -c "SELECT email, status, encode(substr(document_id_enc,1,24),'hex') AS document_id_enc FROM users WHERE id = '0718af52-4b4c-4727-b8ed-720730873966'"
                email            |        status        |                 document_id_enc                  
     ----------------------------+----------------------+--------------------------------------------------
-     maria.1795180882@demo.test | PENDENTE_VERIFICACAO | c3971e23ca7d87eb8c2b6ab2c4f9e205b01299bcc92d4955
+     maria.1795471585@demo.test | PENDENTE_VERIFICACAO | a6bdb0682da934ef747fb41e244c68b2ceb7a92fae02424f
     (1 row)
     
 
 ▶ 4. O operador aprova o KYC dos dois clientes
   POST /auth/login -> HTTP 200
   GET /admin/users?status=PENDENTE_VERIFICACAO -> HTTP 200
-  pendentes: teste.fef49ce7@cliente.test, teste.16006724@cliente.test, teste.8108255b@cliente.test, teste.337212d5@cliente.test, teste.473af2a6@cliente.test, teste.d09f1061@cliente.test, maria.1795180882@demo.test, john.1795180882@demo.test
-  POST /admin/users/9ae83eab-6366-4dfc-9a87-c7800a178838/approve-kyc -> HTTP 200
+  pendentes: teste.2fb2bae7@cliente.test, teste.7fd6dbb7@cliente.test, teste.388d05eb@cliente.test, teste.bc076af7@cliente.test, teste.81adb32c@cliente.test, teste.7f6c1b00@cliente.test, maria.1795471585@demo.test, john.1795471585@demo.test
+  POST /admin/users/0718af52-4b4c-4727-b8ed-720730873966/approve-kyc -> HTTP 200
   ✔ KYC EU aprovado (HTTP 200)
     {
       "iban": "GS-EU-00000008",
-      "user_id": "9ae83eab-6366-4dfc-9a87-c7800a178838",
+      "user_id": "0718af52-4b4c-4727-b8ed-720730873966",
       "region": "EU",
       "currency": "EUR",
       "balance": "0.00",
       "status": "ATIVA",
       "daily_limit": "50000.00",
-      "created_at": "2026-11-20T13:21:25.351998+00:00",
+      "created_at": "2026-11-23T22:06:26.675249+00:00",
       "closed_at": null,
+      "region_unavailable": false,
       "created": true
     }
-  POST /admin/users/fa935763-634a-4c52-8585-3934b122e5a9/approve-kyc -> HTTP 200
+  POST /admin/users/3e048cdc-a941-4fa6-9558-3ff40e7476a6/approve-kyc -> HTTP 200
   ✔ KYC AM aprovado (HTTP 200)
     {
       "iban": "GS-AM-00000039",
-      "user_id": "fa935763-634a-4c52-8585-3934b122e5a9",
+      "user_id": "3e048cdc-a941-4fa6-9558-3ff40e7476a6",
       "region": "AM",
       "currency": "USD",
       "balance": "0.00",
       "status": "ATIVA",
       "daily_limit": "50000.00",
-      "created_at": "2026-11-20T13:21:25.527981+00:00",
+      "created_at": "2026-11-23T22:06:26.762639+00:00",
       "closed_at": null,
+      "region_unavailable": false,
       "created": true
     }
 
 ▶ 5. Consulta direta a cada shard: cada conta só existe no nó da sua região
   pg-europa:
-  $ psql "host=pg-europa.global.local,pg-europa-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT iban, currency, balance FROM accounts WHERE user_id IN ('9ae83eab-6366-4dfc-9a87-c7800a178838','fa935763-634a-4c52-8585-3934b122e5a9')"
+  $ psql "host=pg-europa.global.local,pg-europa-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT iban, currency, balance FROM accounts WHERE user_id IN ('0718af52-4b4c-4727-b8ed-720730873966','3e048cdc-a941-4fa6-9558-3ff40e7476a6')"
           iban      | currency | balance 
     ----------------+----------+---------
      GS-EU-00000008 | EUR      |    0.00
     (1 row)
     
   pg-america:
-  $ psql "host=pg-america.global.local,pg-america-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT iban, currency, balance FROM accounts WHERE user_id IN ('9ae83eab-6366-4dfc-9a87-c7800a178838','fa935763-634a-4c52-8585-3934b122e5a9')"
+  $ psql "host=pg-america.global.local,pg-america-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT iban, currency, balance FROM accounts WHERE user_id IN ('0718af52-4b4c-4727-b8ed-720730873966','3e048cdc-a941-4fa6-9558-3ff40e7476a6')"
           iban      | currency | balance 
     ----------------+----------+---------
      GS-AM-00000039 | USD      |    0.00
@@ -94,21 +96,21 @@
   header: {"alg":"RS256","kid":"7OvHvs650CnDr6UsgnvvdLPI9UA3HDC_3ko6Xw4WsPg","typ":"JWT"}
   claims:
     {
-      "sub": "9ae83eab-6366-4dfc-9a87-c7800a178838",
+      "sub": "0718af52-4b4c-4727-b8ed-720730873966",
       "role": "cliente",
       "region": "EU",
       "iss": "auth.global.local",
       "aud": "global-scale",
-      "iat": 1795180895,
-      "exp": 1795181795,
-      "jti": "b5e803ae-4a4d-461e-aad3-827df9ccf53c"
+      "iat": 1795471592,
+      "exp": 1795472492,
+      "jti": "05c86e3c-84f2-4a21-bfd3-3b4ddd2f01bd"
     }
 
 ▶ 7. GET /me — validado localmente pela api com a chave pública (JWKS)
   GET /me -> HTTP 200 (X-Served-By: api-2)
   ✔ dados do token e contas (HTTP 200)
     {
-      "user_id": "9ae83eab-6366-4dfc-9a87-c7800a178838",
+      "user_id": "0718af52-4b4c-4727-b8ed-720730873966",
       "role": "cliente",
       "region": "EU",
       "accounts": [
@@ -121,4 +123,4 @@
     }
 
 ══════ Cenário 01 concluído ══════
-(2026-11-20T13:21:35Z)
+(2026-11-23T22:06:32Z)

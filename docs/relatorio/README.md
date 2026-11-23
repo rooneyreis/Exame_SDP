@@ -16,4 +16,4 @@ Rascunhos em Markdown das secções do relatório (PDF) pedido no enunciado. Cad
 | [09-tolerancia-a-falhas.md](09-tolerancia-a-falhas.md) | cada cenário de falha com o comportamento e a evidência | entregáveis |
 | [10-limitacoes.md](10-limitacoes.md) | limitações e o que se faria em produção | entregáveis |
 
-Para gerar o PDF: juntar os ficheiros por ordem (ex.: `pandoc docs/relatorio/0*.md docs/relatorio/10-limitacoes.md -o relatorio.pdf`), exportar os diagramas Mermaid para PNG e incluir as capturas de `docs/evidencias/capturas/`.
+PDF final: [`relatorio.pdf`](relatorio.pdf), gerado por `python scripts/build-report.py` (precisa de `pip install markdown` e de Chrome ou Edge). O script junta os capítulos por ordem, desenha os diagramas Mermaid e imprime em A4. Para incluir as capturas de `docs/evidencias/capturas/`, referencie-as nos capítulos e volte a gerar o PDF.

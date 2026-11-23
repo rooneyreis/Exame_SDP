@@ -1,6 +1,6 @@
 
 ══════ Cenário 12 — TLS obrigatório em todos os canais ══════
-(2026-11-23T21:58:15Z)
+(2026-11-23T22:08:27Z)
 
 ▶ 1. PostgreSQL sem TLS (sslmode=disable) → recusado pelo pg_hba.conf
   ✔ pg-core: ligação sem TLS rejeitada ("no encryption")
@@ -60,4 +60,4 @@
   ✔ TLS 1.1 recusado (mínimo TLS 1.2)
 
 ══════ Cenário 12 concluído ══════
-(2026-11-23T21:58:21Z)
+(2026-11-23T22:08:32Z)
