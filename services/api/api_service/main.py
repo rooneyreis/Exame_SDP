@@ -22,7 +22,7 @@ import psycopg_pool
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 
-from common import limits
+from common import custody, limits
 from common.audit import AuditLog, verify_chain
 from common.crypto import canonical_json, load_ed25519_private, signed_headers
 from common.db import REGIONS, SHARD_NODES, ShardRouter, is_valid_iban, make_pool, region_of_iban, shard_conninfo
@@ -125,12 +125,87 @@ async def read_connection(region: str):
         await pool.putconn(conn)
 
 def account_out(row: dict) -> dict:
-    return {
+    out = {
         "iban": row["iban"], "user_id": str(row["user_id"]), "region": region_of_iban(row["iban"]),
         "currency": row["currency"], "balance": f"{row['balance']:.2f}", "status": row["status"],
-        "daily_limit": f"{row['daily_limit']:.2f}", "created_at": row["created_at"],
-        "closed_at": row.get("closed_at"),
+        "daily_limit": f"{row['daily_limit']:.2f}" if row.get("daily_limit") is not None else None,
+        "created_at": row.get("created_at"), "closed_at": row.get("closed_at"),
+        "region_unavailable": bool(row.get("unavailable")),
     }
+    if row.get("unavailable"):
+        # Region totally down: "balance" is the amount held in custody in other shards (usable now).
+        out["held_in"] = {r: f"{b:.2f}" for r, b in row["held_in"].items()}
+    return out
+
+
+# --- region totally down: account directory + custody ------------------------------------
+
+ANY_NODE = {r: shard_conninfo(r, settings.db_user, settings.db_password, settings.ca_file, read_only=True)
+            for r in REGIONS}
+_region_state: dict[str, tuple[float, bool]] = {}
+REGION_STATE_SECONDS = 5
+
+
+async def region_down(region: str, fresh: bool = False) -> bool:
+    """True only when NO node of the region answers (primary AND replica). Cached for a few
+    seconds, so a region that is down does not cost a connection timeout on every request.
+    fresh=True ignores the cache (after a read failed: the region may have just gone down)."""
+    cached = _region_state.get(region)
+    if cached and not fresh and time.monotonic() - cached[0] < REGION_STATE_SECONDS:
+        return cached[1]
+    try:
+        async with await psycopg.AsyncConnection.connect(ANY_NODE[region]) as conn:
+            await conn.execute("SELECT 1")
+        down = False
+    except psycopg.OperationalError:
+        down = True
+    _region_state[region] = (time.monotonic(), down)
+    return down
+
+
+async def directory_upsert(row: dict) -> None:
+    """Keeps the account directory (pg-core) in step with the shard. Never fails the request:
+    the coordinator also synchronises it from the shards."""
+    try:
+        async with core.connection() as conn:
+            await conn.execute(
+                """INSERT INTO account_directory (iban, user_id, region, currency, status) VALUES (%s, %s, %s, %s, %s)
+                   ON CONFLICT (iban) DO UPDATE SET status = EXCLUDED.status, currency = EXCLUDED.currency,
+                       updated_at = now()""",
+                (row["iban"], row["user_id"], region_of_iban(row["iban"]), row["currency"], row["status"]))
+    except Exception as exc:
+        log.warning(f"diretório de contas não atualizado para {row['iban']}: {exc!r}")
+
+
+async def custody_held(iban: str) -> dict[str, Decimal]:
+    """{shard: amount held in custody for iban} over the shards that are up."""
+    held = {}
+    for region in custody.other_regions(region_of_iban(iban)):
+        if await region_down(region):
+            continue
+        try:
+            async with shards.for_region(region).connection(timeout=3) as conn:
+                balance = await custody.holdings(conn, iban)
+        except Exception as exc:
+            log.warning(f"custódia em {region} ilegível: {exc!r}")
+            continue
+        if balance is not None:
+            held[region] = balance
+    return held
+
+
+async def custody_account(iban: str) -> dict:
+    """An account whose region is totally down, as it can be used right now: owner, currency
+    and status from the directory; balance = what is held in custody in other shards."""
+    async with core.connection() as conn:
+        d = await (await conn.execute("SELECT * FROM account_directory WHERE iban = %s", (iban,))).fetchone()
+    if d is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
+                            f"região {region_of_iban(iban)} indisponível, tente novamente")
+    held = await custody_held(iban)
+    return {"iban": iban, "user_id": d["user_id"], "currency": d["currency"], "status": d["status"],
+            "balance": sum(held.values(), Decimal(0)), "daily_limit": None, "created_at": None,
+            "closed_at": None, "unavailable": True, "held_in": held}
 
 
 async def eur_value(amount: Decimal, currency: str) -> Decimal:
@@ -151,8 +226,15 @@ def check_iban(iban: str) -> None:
 
 async def load_account(iban: str) -> dict:
     check_iban(iban)
-    async with read_connection(region_of_iban(iban)) as conn:
-        row = await (await conn.execute("SELECT * FROM accounts WHERE iban = %s", (iban,))).fetchone()
+    if await region_down(region_of_iban(iban)):
+        return await custody_account(iban)
+    try:
+        async with read_connection(region_of_iban(iban)) as conn:
+            row = await (await conn.execute("SELECT * FROM accounts WHERE iban = %s", (iban,))).fetchone()
+    except (psycopg_pool.PoolTimeout, psycopg.OperationalError):
+        if await region_down(region_of_iban(iban), fresh=True):   # it has just gone down
+            return await custody_account(iban)
+        raise
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conta não encontrada")
     return row
@@ -207,13 +289,25 @@ async def get_account(iban: str, claims: dict = Depends(current_claims)):
 async def movements(iban: str, limit: int = 100, claims: dict = Depends(current_claims)):
     account = await load_account(iban)
     ensure_can_read_account(account, claims)
-    async with read_connection(region_of_iban(iban)) as conn:
-        rows = await (await conn.execute(
-            """SELECT id, tx_id, type, amount, currency, balance_after, origin, created_at
-               FROM movements WHERE iban = %s ORDER BY id DESC LIMIT %s""",
-            (iban, min(max(limit, 1), 500)))).fetchall()
+    limit = min(max(limit, 1), 500)
+    if account.get("unavailable"):
+        # Region down: the movements made in custody, not yet forwarded to the region.
+        rows = []
+        for region in account["held_in"]:
+            async with shards.for_region(region).connection(timeout=3) as conn:
+                rows += [{**r, "via_region": region, "pending_forward": True} for r in await (await conn.execute(
+                    """SELECT id, tx_id, type, amount, currency, balance_after, origin, counterparty, created_at
+                       FROM custody_movements WHERE target_iban = %s AND forwarded_by IS NULL
+                       ORDER BY id DESC LIMIT %s""", (iban, limit))).fetchall()]
+        rows.sort(key=lambda r: r["created_at"], reverse=True)
+    else:
+        async with read_connection(region_of_iban(iban)) as conn:
+            rows = await (await conn.execute(
+                """SELECT id, tx_id, type, amount, currency, balance_after, origin, via_region, created_at
+                   FROM movements WHERE iban = %s ORDER BY created_at DESC, id DESC LIMIT %s""",
+                (iban, limit))).fetchall()
     return [{**r, "tx_id": str(r["tx_id"]), "amount": f"{r['amount']:.2f}",
-             "balance_after": f"{r['balance_after']:.2f}"} for r in rows]
+             "balance_after": f"{r['balance_after']:.2f}"} for r in rows[:limit]]
 
 
 @app.get("/fx-rates")
@@ -228,9 +322,19 @@ async def fx_rates(claims: dict = Depends(require_permission("fx:read"))):
 async def cash_operation(iban: str, body: CashOperation, claims: dict, kind: str, request: Request = None) -> dict:
     """Deposit or withdrawal: a normal (local) ACID transaction inside ONE shard."""
     check_iban(iban)
+    if await region_down(region_of_iban(iban)):
+        return await custody_cash_operation(iban, body, claims, kind, request)
     tx_id = uuid.uuid4()
     error = None
-    async with shards.for_iban(iban).connection() as conn:
+    pool = shards.for_iban(iban)
+    try:
+        conn = await pool.getconn(timeout=10)
+    except psycopg_pool.PoolTimeout:
+        # No connection at all: nothing was executed, so it is safe to go to custody instead.
+        if await region_down(region_of_iban(iban), fresh=True):
+            return await custody_cash_operation(iban, body, claims, kind, request)
+        raise
+    try:
         async with conn.transaction():
             # Row lock: concurrent operations on the same account wait for each other.
             account = await (await conn.execute(
@@ -251,6 +355,8 @@ async def cash_operation(iban: str, body: CashOperation, claims: dict, kind: str
                            VALUES (%s, %s, %s, %s, %s, %s, %s)""",
                         (iban, tx_id, "CREDITO" if kind == "DEPOSITO" else "DEBITO",
                          body.amount, account["currency"], new_balance, kind))
+    finally:
+        await pool.putconn(conn)
     if error:
         raise HTTPException(*error)
     log.info(f"{kind.lower()} de {body.amount} {account['currency']} em {iban}",
@@ -263,6 +369,47 @@ async def cash_operation(iban: str, body: CashOperation, claims: dict, kind: str
                         settings.audit_dir)
     return {"tx_id": str(tx_id), "iban": iban, "type": kind, "amount": f"{body.amount:.2f}",
             "currency": account["currency"], "balance": f"{new_balance:.2f}"}
+
+
+async def custody_cash_operation(iban: str, body: CashOperation, claims: dict, kind: str, request: Request = None) -> dict:
+    """Deposit or withdrawal on an account whose region is totally down: done in custody,
+    in another shard (a local transaction there). Forwarded when the region is back."""
+    region = region_of_iban(iban)
+    account = await custody_account(iban)
+    if account["status"] != "ATIVA":
+        raise HTTPException(status.HTTP_409_CONFLICT, f"conta {account['status']}")
+    held = account["held_in"]
+    if kind == "DEPOSITO":
+        reachable = [r for r in custody.other_regions(region) if not await region_down(r)]
+        holder = custody.credit_holder(region, reachable, held)
+    else:
+        holder = custody.debit_holder(held, body.amount)
+    if holder is None:
+        raise HTTPException(status.HTTP_409_CONFLICT if kind == "LEVANTAMENTO" else status.HTTP_503_SERVICE_UNAVAILABLE,
+                            f"região {region} indisponível" + (" e sem valor retido para esta conta"
+                                                               if kind == "LEVANTAMENTO" else ""))
+    tx_id = uuid.uuid4()
+    async with shards.for_region(holder).connection() as conn:
+        async with conn.transaction():
+            try:
+                new_held = await custody.apply(
+                    conn, iban=iban, user_id=account["user_id"], currency=account["currency"],
+                    side="CREDITO" if kind == "DEPOSITO" else "DEBITO", amount=body.amount, tx_id=tx_id,
+                    origin=kind, counterparty=None)
+            except custody.CustodyError as exc:
+                raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
+    total = sum((b for r, b in held.items() if r != holder), Decimal(0)) + new_held
+    log.warning(f"região {region} em baixo: {kind.lower()} de {body.amount} {account['currency']} em {iban} "
+                f"feito em custódia no shard {holder}", extra=log_extra(tx_id=str(tx_id), operador=claims["sub"]))
+    await record(kind, claims, request, tx_id=str(tx_id), iban=iban, amount=f"{body.amount:.2f}",
+                 currency=account["currency"], custody_region=holder,
+                 before={"held": f"{account['balance']:.2f}"}, after={"held": f"{total:.2f}"})
+    await record_report(settings.instance_id, {"type": "cash", "operation": kind, "region": region,
+                                               "currency": account["currency"], "amount": f"{body.amount:.2f}"},
+                        settings.audit_dir)
+    return {"tx_id": str(tx_id), "iban": iban, "type": kind, "amount": f"{body.amount:.2f}",
+            "currency": account["currency"], "balance": f"{total:.2f}", "region_unavailable": True,
+            "custody_region": holder}
 
 
 @app.post("/accounts/{iban}/deposit")
@@ -297,6 +444,7 @@ async def create_account(body: CreateAccountRequest, claims: dict = Depends(requ
                    VALUES ('GS-' || %s || '-' || lpad(nextval('iban_seq')::text, 8, '0'), %s, %s)
                    RETURNING *""",
                 (body.region, body.user_id, body.currency))).fetchone()
+    await directory_upsert(row)
     log.info(f"conta {row['iban']} criada no shard {body.region}", extra=log_extra(user_id=str(body.user_id)))
     await audit.write("CONTA_CRIADA", iban=row["iban"], user_id=str(body.user_id), region=body.region,
                       currency=body.currency, by=claims["sub"])
@@ -400,6 +548,14 @@ async def consistency(claims: dict = Depends(require_permission("audit:read"))):
                 movements.setdefault(str(m["tx_id"]), []).append({**m, "region": region})
             prepared[region] = [r["gid"] for r in await (await conn.execute(
                 "SELECT gid FROM pg_prepared_xacts WHERE database = current_database()")).fetchall()]
+            # Legs kept in custody (region of the account was down) and not yet forwarded:
+            # they count as being in the account's region. Once forwarded they are in its
+            # movements table (replayed), so they are read above instead.
+            for m in await (await conn.execute(
+                    """SELECT m.tx_id, m.target_iban AS iban, m.type, m.amount, c.target_region
+                       FROM custody_movements m JOIN custody_accounts c USING (target_iban)
+                       WHERE m.origin = 'TRANSFERENCIA' AND m.forwarded_by IS NULL""")).fetchall():
+                movements.setdefault(str(m["tx_id"]), []).append({**m, "region": m["target_region"]})
 
     problems, in_progress = [], []
     by_id = {str(t["tx_id"]): t for t in txs}

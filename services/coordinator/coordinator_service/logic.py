@@ -40,7 +40,13 @@ def convert(amount: Decimal, rate: Decimal) -> Decimal:
 
 def participants(from_iban: str, to_iban: str) -> list[tuple[str, str, str]]:
     """[(region, side, iban)] in the global lock order (by region, then by IBAN)."""
-    legs = [(region_of_iban(from_iban), "DEBITO", from_iban), (region_of_iban(to_iban), "CREDITO", to_iban)]
+    return plan_legs(from_iban, to_iban, region_of_iban(from_iban), region_of_iban(to_iban))
+
+
+def plan_legs(from_iban: str, to_iban: str, debit_region: str, credit_region: str) -> list[tuple[str, str, str]]:
+    """[(shard where the leg runs, side, iban)] in the global lock order. Normally the shard
+    is the account's region; a leg in custody (its region totally down) runs in another shard."""
+    legs = [(debit_region, "DEBITO", from_iban), (credit_region, "CREDITO", to_iban)]
     return sorted(legs, key=lambda leg: (REGION_ORDER.index(leg[0]), leg[2]))
 
 
@@ -118,7 +124,7 @@ def orphan_action(state: str | None, age_seconds: float | None) -> str:
     not handle. Decided by what the coordinator log says about it."""
     if state in ("CONFIRMADA", "DECISAO_COMMIT"):
         return "COMMIT"
-    if state is None or state in ("ABORTADA", "INICIADA"):
+    if state is None or state in ("ABORTADA", "INICIADA", "PENDENTE"):
         return "ROLLBACK"           # unknown to the log or never decided: presumed abort
     if state == "PREPARANDO" and age_seconds is not None and age_seconds > PREPARE_TIMEOUT_SECONDS:
         return "ROLLBACK"

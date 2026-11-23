@@ -238,8 +238,10 @@ def test_listing_with_a_region_down_returns_the_others(http, client):
         r = http.get("/accounts", headers=client["h"])
         assert r.status_code == 200
         assert r.headers.get("X-Unavailable-Regions") == "AF"
-        regions = {a["region"] for a in r.json()}
-        assert regions == {"EU", "AM"}
+        # EU and AM read from their shards; the África accounts show only the amount held in
+        # custody elsewhere (phase 11), flagged as unavailable.
+        assert {a["region"] for a in r.json() if not a["region_unavailable"]} == {"EU", "AM"}
+        assert {a["region"] for a in r.json() if a["region_unavailable"]} <= {"AF"}
         assert http.get("/me", headers=client["h"]).json()["unavailable_regions"] == ["AF"]
     finally:
         run(["docker", "start", "pg-africa"])

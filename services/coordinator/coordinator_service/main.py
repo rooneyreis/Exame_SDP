@@ -27,7 +27,7 @@ from psycopg.rows import dict_row
 
 from common.audit import AuditLog
 from common.crypto import check_signed_request, load_ed25519_private, load_ed25519_public, load_trusted_signers
-from common import limits
+from common import custody, limits
 from common.db import REGIONS, make_pool, region_of_iban, shard_conninfo
 from common.logging import add_request_logging, log_extra, setup_logging, tx_id_var
 from common.reports import record as record_report
@@ -43,6 +43,12 @@ core = make_pool(
     f"host=pg-core.global.local dbname=coordinator user={settings.db_user} password={settings.db_password} "
     f"sslmode=verify-full sslrootcert={settings.ca_file} connect_timeout=3", max_size=20)
 SHARD_DSN = {r: shard_conninfo(r, settings.db_user, settings.db_password, settings.ca_file) for r in REGIONS}
+# Read-only (validate the accounts before starting): the primary or, if it is down, the replica.
+# So a transfer enters the log and stays PENDENTE instead of being refused.
+SHARD_READ_DSN = {r: shard_conninfo(r, settings.db_user, settings.db_password, settings.ca_file, read_only=True)
+                  for r in REGIONS}
+# Any node of the region answers: tells "primary down" (PENDENTE) from "region totally down" (custody).
+ANY_NODE_DSN = SHARD_READ_DSN
 
 # Settlement with the legacy partner bank (Java): our signing key + the bank's public key.
 SIGNING_KEY = load_ed25519_private(settings.signing_key)
@@ -162,9 +168,41 @@ async def connect_shard(region: str) -> psycopg.AsyncConnection:
 
 
 async def read_account(region: str, iban: str) -> dict | None:
-    async with await connect_shard(region) as conn:
+    async with await psycopg.AsyncConnection.connect(SHARD_READ_DSN[region], row_factory=dict_row) as conn:
         return await (await conn.execute(
             "SELECT iban, user_id, currency, status FROM accounts WHERE iban = %s", (iban,))).fetchone()
+
+
+async def apply_custody_leg(conn, tx: dict, side: str, iban: str) -> None:
+    """One side of the transfer executed in CUSTODY: the account's region is totally down,
+    so the money is debited from / credited to the custody account of `iban` in this shard."""
+    debit = side == "DEBITO"
+    status_ = tx["src_status"] if debit else tx["dst_status"]
+    if status_ != "ATIVA":
+        raise ParticipantError(f"conta de {'origem' if debit else 'destino'} {status_}")
+    try:
+        await custody.apply(
+            conn, iban=iban, user_id=tx["src_user"] if debit else tx["dst_user"],
+            currency=tx["from_currency"] if debit else tx["to_currency"], side=side,
+            amount=tx["amount"] if debit else tx["converted_amount"], tx_id=tx["tx_id"],
+            origin="TRANSFERENCIA", counterparty=tx["to_iban"] if debit else tx["from_iban"])
+    except custody.CustodyError as exc:
+        raise ParticipantError(str(exc)) from exc
+    except psycopg.errors.LockNotAvailable as exc:
+        raise ParticipantError("lock_timeout: valor retido bloqueado por outra transação") from exc
+
+
+async def apply_any_leg(conn, tx: dict, exec_region: str, side: str, iban: str) -> None:
+    if exec_region != region_of_iban(iban):
+        await apply_custody_leg(conn, tx, side, iban)
+    else:
+        await apply_leg(conn, tx, side, iban)
+
+
+def legs(tx: dict) -> list[tuple[str, str, str]]:
+    """[(shard where it runs, side, iban)] in the global lock order."""
+    return logic.plan_legs(tx["from_iban"], tx["to_iban"], tx["debit_region"] or tx["from_region"],
+                           tx["credit_region"] or tx["to_region"])
 
 
 async def apply_leg(conn, tx: dict, side: str, iban: str) -> None:
@@ -204,17 +242,24 @@ async def apply_leg(conn, tx: dict, side: str, iban: str) -> None:
 # --- LOCAL ----------------------------------------------------------------------------
 
 async def run_local(tx: dict) -> None:
-    region = tx["from_region"]
+    region = tx["debit_region"] or tx["from_region"]
     try:
         async with await connect_shard(region) as conn:
             async with conn.transaction():          # BEGIN ... COMMIT in ONE shard
-                for _, side, iban in logic.participants(tx["from_iban"], tx["to_iban"]):  # ordered by IBAN
-                    await apply_leg(conn, tx, side, iban)
+                for exec_region, side, iban in legs(tx):  # ordered by IBAN
+                    await apply_any_leg(conn, tx, exec_region, side, iban)
         await set_state(tx["tx_id"], "CONFIRMADA", shard=region)
     except ParticipantError as exc:
         await set_state(tx["tx_id"], "ABORTADA", str(exc))
     except psycopg.OperationalError as exc:
-        await set_state(tx["tx_id"], "ABORTADA", f"shard {region} indisponível: {type(exc).__name__}")
+        await mark_pending(tx, region, type(exc).__name__)
+
+
+async def mark_pending(tx: dict, region: str, reason: str) -> None:
+    """Um nó não responde: a transferência não é abortada, fica PENDENTE (sem movimentos e sem
+    bloqueios) e o recovery loop conclui-a quando todos os nós voltarem a responder."""
+    await event(tx["tx_id"], f"AGUARDA_NO_{region}", reason=reason)
+    await set_state(tx["tx_id"], "PENDENTE", f"nó {region} indisponível ({reason}): será concluída quando o nó voltar")
 
 
 # --- DISTRIBUIDA: Two-Phase Commit --------------------------------------------------------
@@ -226,7 +271,7 @@ async def prepare_leg(tx: dict, region: str, side: str, iban: str) -> psycopg.As
     try:
         xid = conn.xid(1, str(tx["tx_id"]), region)   # gid = format 1, gtrid = tx_id, bqual = region
         await conn.tpc_begin(xid)
-        await apply_leg(conn, tx, side, iban)
+        await apply_any_leg(conn, tx, region, side, iban)
         if chaos.fail_participant == region:
             raise ParticipantError(f"falha injetada no participante {region} (chaos)")
         await conn.tpc_prepare()
@@ -250,7 +295,8 @@ async def run_2pc(tx: dict) -> None:
 
     # ---- Phase 1: PREPARE, one shard after the other in the global order (EU, AM, AF) ----
     failure = None
-    for region, side, iban in logic.participants(tx["from_iban"], tx["to_iban"]):
+    unavailable = None          # region that did not answer (not a NO vote)
+    for region, side, iban in legs(tx):
         try:
             prepared[region] = await asyncio.wait_for(prepare_leg(tx, region, side, iban),
                                                       settings.participant_timeout)
@@ -258,11 +304,12 @@ async def run_2pc(tx: dict) -> None:
         except ParticipantError as exc:
             failure = f"{region}: {exc}"
         except asyncio.TimeoutError:
-            failure = f"{region}: timeout na fase 1 ({settings.participant_timeout}s)"
+            failure, unavailable = f"timeout na fase 1 ({settings.participant_timeout}s)", region
         except psycopg.OperationalError as exc:
-            failure = f"{region}: shard indisponível ({type(exc).__name__})"
+            failure, unavailable = f"shard indisponível ({type(exc).__name__})", region
         if failure:
-            await event(tx_id, f"VOTO_NAO_{region}", reason=failure)
+            if not unavailable:
+                await event(tx_id, f"VOTO_NAO_{region}", reason=failure)
             break
 
     if failure:
@@ -274,7 +321,10 @@ async def run_2pc(tx: dict) -> None:
             except Exception as exc:  # the recovery loop will find it as an orphan
                 await event(tx_id, f"ROLLBACK_FALHOU_{region}", error=repr(exc))
             await conn.close()
-        await set_state(tx_id, "ABORTADA", failure)
+        if unavailable:
+            await mark_pending(tx, unavailable, failure)
+        else:
+            await set_state(tx_id, "ABORTADA", failure)
         return
 
     # ---- Everyone voted YES ----
@@ -323,6 +373,79 @@ async def run_2pc(tx: dict) -> None:
         await set_state(tx_id, "CONFIRMADA")
 
 
+# --- routing: direct, or in custody when the account's region is totally down ---------------
+
+_down_until: dict[str, float] = {}     # region -> monotonic time until which it counts as down
+DOWN_CACHE_SECONDS = 5
+
+
+async def region_down(region: str) -> bool:
+    """True only when NO node of the region answers (primary AND replica). A primary that is
+    down while its replica answers is a failover case: writes wait for the promotion."""
+    if time.monotonic() < _down_until.get(region, 0):
+        return True
+    try:
+        async with await psycopg.AsyncConnection.connect(ANY_NODE_DSN[region]) as conn:
+            await conn.execute("SELECT 1")
+        _down_until.pop(region, None)
+        return False
+    except psycopg.OperationalError:
+        _down_until[region] = time.monotonic() + DOWN_CACHE_SECONDS
+        return True
+
+
+async def directory_account(iban: str) -> dict | None:
+    async with core.connection() as conn:
+        return await (await conn.execute(
+            "SELECT iban, user_id, currency, status FROM account_directory WHERE iban = %s", (iban,))).fetchone()
+
+
+async def custody_holdings(iban: str) -> tuple[dict[str, Decimal], list[str]]:
+    """({shard: amount held for iban}, active shards), over the shards of the other regions."""
+    holding, reachable = {}, []
+    for region in custody.other_regions(region_of_iban(iban)):
+        if time.monotonic() < _down_until.get(region, 0):
+            continue
+        try:
+            async with await connect_shard(region) as conn:
+                balance = await custody.holdings(conn, iban)
+        except psycopg.OperationalError:
+            continue
+        reachable.append(region)
+        if balance is not None:
+            holding[region] = balance
+    return holding, reachable
+
+
+async def resolve(iban: str, side: str, amount: Decimal) -> tuple[dict | None, str, bool]:
+    """(account, shard where this leg runs, in custody?).
+    The account's own shard if it answers; if its region is totally down, the account is
+    validated in the directory and the leg runs in custody in another active shard."""
+    region = region_of_iban(iban)
+    if time.monotonic() >= _down_until.get(region, 0):
+        try:
+            return await read_account(region, iban), region, False
+        except psycopg.OperationalError:
+            if not await region_down(region):
+                raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
+                                    f"shard {region} indisponível (primário em baixo, a aguardar failover)")
+    account = await directory_account(iban)
+    if account is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
+                            f"região {region} indisponível e a conta não está no diretório")
+    holding, reachable = await custody_holdings(iban)
+    if side == "CREDITO":
+        holder = custody.credit_holder(region, reachable, holding)
+    else:
+        holder = custody.debit_holder(holding, amount)
+    if holder is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
+                            f"região {region} indisponível" + ("" if side == "CREDITO"
+                                                               else " e sem valor retido para esta conta"))
+    log.warning(f"região {region} em baixo: {side.lower()} de {iban} em custódia no shard {holder}")
+    return account, holder, True
+
+
 # --- POST /tx -------------------------------------------------------------------------
 
 @app.post("/tx")
@@ -360,11 +483,10 @@ async def process_transfer(payload: dict, headers) -> JSONResponse:
         return response_for(await tx_view(existing["tx_id"]), replay=True)
 
     from_region, to_region = region_of_iban(payload["from_iban"]), region_of_iban(payload["to_iban"])
-    try:
-        src = await read_account(from_region, payload["from_iban"])
-        dst = await read_account(to_region, payload["to_iban"])
-    except psycopg.OperationalError:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "shard indisponível")
+    # Where each leg runs: in the account's region, or in custody in another shard when that
+    # region is totally down (primary AND replica).
+    src, debit_region, src_custody = await resolve(payload["from_iban"], "DEBITO", amount)
+    dst, credit_region, dst_custody = await resolve(payload["to_iban"], "CREDITO", amount)
     if src is None or dst is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conta de origem ou destino não existe")
 
@@ -398,7 +520,12 @@ async def process_transfer(payload: dict, headers) -> JSONResponse:
         "from_region": from_region, "to_region": to_region, "amount": amount,
         "from_currency": src["currency"], "to_currency": dst["currency"],
         "fx_rate": rate, "converted_amount": logic.convert(amount, rate),
-        "kind": logic.transfer_kind(from_region, to_region),
+        # LOCAL / DISTRIBUIDA by where the legs actually run (one shard or two).
+        "kind": logic.transfer_kind(debit_region, credit_region),
+        "debit_region": debit_region, "credit_region": credit_region,
+        "routing": "CUSTODIA" if (src_custody or dst_custody) else "DIRETA",
+        "src_status": src["status"], "dst_status": dst["status"],
+        "src_user": src["user_id"], "dst_user": dst["user_id"],
         # Rastreabilidade: quem submeteu a ordem e quem a aprovou (assinado pela api).
         "initiated_by": payload.get("initiated_by") or payload["user_id"],
         "initiated_role": payload.get("initiated_role") or "cliente",
@@ -424,11 +551,12 @@ async def process_transfer(payload: dict, headers) -> JSONResponse:
                     """INSERT INTO transactions (tx_id, idempotency_key, user_id, from_iban, to_iban, from_region,
                            to_region, amount, from_currency, to_currency, fx_rate, converted_amount, kind, state,
                            request_signature, request_sha256, initiated_by, initiated_role, approved_by, request_id,
-                           amount_eur, own_transfer)
+                           amount_eur, own_transfer, routing, debit_region, credit_region)
                        VALUES (%(tx_id)s, %(idempotency_key)s, %(user_id)s, %(from_iban)s, %(to_iban)s, %(from_region)s,
                            %(to_region)s, %(amount)s, %(from_currency)s, %(to_currency)s, %(fx_rate)s,
                            %(converted_amount)s, %(kind)s, 'INICIADA', %(sig)s, %(sha)s, %(initiated_by)s,
-                           %(initiated_role)s, %(approved_by)s, %(request_id)s, %(amount_eur)s, %(own_transfer)s)
+                           %(initiated_role)s, %(approved_by)s, %(request_id)s, %(amount_eur)s, %(own_transfer)s,
+                           %(routing)s, %(debit_region)s, %(credit_region)s)
                        ON CONFLICT DO NOTHING RETURNING tx_id""",
                     {**tx, "sig": headers.get("x-signature"), "sha": headers.get("x-payload-sha256")})).fetchone()
         if inserted is None:  # the same request arrived twice at the same time
@@ -437,6 +565,12 @@ async def process_transfer(payload: dict, headers) -> JSONResponse:
                     to_currency=tx["to_currency"], fx_rate=str(rate), converted=str(tx["converted_amount"]),
                     signer=headers.get("x-signer"), initiated_by=tx["initiated_by"], initiated_role=tx["initiated_role"],
                     approved_by=tx["approved_by"])
+        if tx["routing"] == "CUSTODIA":
+            # Where the money came from, where it was going, and where it is kept meanwhile.
+            await event(tx["tx_id"], "DESVIO_CUSTODIA",
+                        debito={"conta": tx["from_iban"], "regiao": from_region, "executado_em": debit_region},
+                        credito={"conta": tx["to_iban"], "regiao": to_region, "executado_em": credit_region},
+                        motivo="região totalmente indisponível (primário e réplica)")
 
         if over_limit:
             await set_state(tx["tx_id"], "ABORTADA", over_limit)   # logged, never executed
@@ -450,7 +584,8 @@ async def process_transfer(payload: dict, headers) -> JSONResponse:
     view = await tx_view(tx["tx_id"])
     if view["settlement_status"] == "PENDENTE":
         start_settlement(payload["tx_id"])     # asynchronous: the client does not wait for it
-    await audit.write("TRANSFERENCIA", tx_id=payload["tx_id"], kind=tx["kind"], state=view["state"],
+    await audit.write("TRANSFERENCIA", tx_id=payload["tx_id"], kind=tx["kind"], routing=tx["routing"],
+                      debit_region=debit_region, credit_region=credit_region, state=view["state"],
                       actor=tx["initiated_by"], actor_role=tx["initiated_role"], approved_by=tx["approved_by"],
                       result="OK" if view["state"] == "CONFIRMADA" else view["state"],
                       from_iban=tx["from_iban"], to_iban=tx["to_iban"], amount=str(amount),
@@ -518,8 +653,12 @@ shard_failures = {r: 0 for r in REGIONS}
 shard_next_try = {r: 0.0 for r in REGIONS}
 
 
-async def open_available_shards() -> dict[str, tuple[psycopg.AsyncConnection, dict]]:
-    """Connects to every shard that is not in back-off; returns {region: (conn, prepared xids)}."""
+FORWARD_FORMAT = 2   # xid format of the custody forwards (transfers use format 1)
+
+
+async def open_available_shards() -> dict[str, tuple[psycopg.AsyncConnection, dict, dict]]:
+    """Connects to every shard that is not in back-off;
+    returns {region: (conn, prepared transfer xids, prepared forward xids)}."""
     out = {}
     for region in REGIONS:
         if time.monotonic() < shard_next_try[region]:
@@ -527,8 +666,10 @@ async def open_available_shards() -> dict[str, tuple[psycopg.AsyncConnection, di
         try:
             conn = await connect_shard(region)
             await conn.set_autocommit(True)
-            xids = {x.gtrid: x for x in await conn.tpc_recover() if x.format_id == 1 and x.bqual == region}
-            out[region] = (conn, xids)
+            recovered = [x for x in await conn.tpc_recover() if x.bqual == region]
+            xids = {x.gtrid: x for x in recovered if x.format_id == 1}
+            forward_xids = {x.gtrid: x for x in recovered if x.format_id == FORWARD_FORMAT}
+            out[region] = (conn, xids, forward_xids)
             if shard_failures[region]:
                 log.info(f"recovery: shard {region} acessível de novo")
             shard_failures[region] = 0
@@ -541,13 +682,17 @@ async def open_available_shards() -> dict[str, tuple[psycopg.AsyncConnection, di
 
 
 async def movement_exists(conn, tx_id) -> bool:
-    row = await (await conn.execute("SELECT count(*) AS n FROM movements WHERE tx_id = %s", (tx_id,))).fetchone()
+    row = await (await conn.execute(
+        "SELECT (SELECT count(*) FROM movements WHERE tx_id = %s) + "
+        "(SELECT count(*) FROM custody_movements WHERE tx_id = %s) AS n", (tx_id, tx_id))).fetchone()
     return row["n"] > 0
 
 
 async def recover_one(tx: dict, shards: dict) -> None:
     tx_id, gtrid = tx["tx_id"], str(tx["tx_id"])
-    regions = sorted({tx["from_region"], tx["to_region"]}, key=logic.REGION_ORDER.index)
+    debit_region = tx.get("debit_region") or tx["from_region"]
+    credit_region = tx.get("credit_region") or tx["to_region"]
+    regions = sorted({debit_region, credit_region}, key=logic.REGION_ORDER.index)
     age = (logic.utcnow() - tx["updated_at"]).total_seconds()
     action = logic.recovery_action(tx["state"], tx["kind"], age)
     if action == "WAIT" or any(r not in shards for r in regions):
@@ -556,7 +701,7 @@ async def recover_one(tx: dict, shards: dict) -> None:
 
     if action == "COMMIT":
         for region in regions:
-            conn, xids = shards[region]
+            conn, xids, _ = shards[region]
             if gtrid in xids:
                 await conn.tpc_commit(xids.pop(gtrid))
                 await event(tx_id, f"RECUPERACAO_COMMIT_{region}")
@@ -566,14 +711,14 @@ async def recover_one(tx: dict, shards: dict) -> None:
 
     elif action == "ABORT":
         for region in regions:
-            conn, xids = shards[region]
+            conn, xids, _ = shards[region]
             if gtrid in xids:
                 await conn.tpc_rollback(xids.pop(gtrid))
                 await event(tx_id, f"RECUPERACAO_ROLLBACK_{region}")
         await set_state(tx_id, "ABORTADA", f"recuperação: presumed abort ({tx['state']} há {int(age)}s sem decisão)")
 
     elif action == "CHECK_LOCAL":
-        conn, _ = shards[tx["from_region"]]
+        conn, _, _ = shards[debit_region]
         committed = await movement_exists(conn, tx_id)  # local tx is atomic: all movements or none
         if committed:
             await set_state(tx_id, "CONFIRMADA", recovered=True)
@@ -595,8 +740,10 @@ async def recovery_pass() -> None:
             except Exception as exc:
                 log.warning(f"recovery de {tx['tx_id']} falhou: {exc!r}")
 
+        await recover_forwards(shards)
+
         # Orphans: prepared transactions in a shard not handled above.
-        for region, (conn, xids) in shards.items():
+        for region, (conn, xids, _) in shards.items():
             for gtrid, xid in list(xids.items()):
                 if gtrid in in_flight:
                     continue
@@ -612,9 +759,268 @@ async def recovery_pass() -> None:
                 log.warning(f"recovery: preparada órfã {gtrid} em {region} -> {action}")
                 if tx:
                     await event(tx["tx_id"], f"ORFA_{action}_{region}")
+
+        # Custody: send what was kept for a region that is reachable again.
+        await forward_custody(shards)
+        await sync_directory(shards)
     finally:
-        for conn, _ in shards.values():
+        for conn, _, _ in shards.values():
             await conn.close()
+
+    await resume_pending(set(shards))
+
+
+async def add_custody_fields(tx: dict) -> None:
+    """A leg in custody needs the owner and status of the account (from the directory): a
+    transaction read back from the log does not carry them."""
+    for side, iban in (("src", tx["from_iban"]), ("dst", tx["to_iban"])):
+        row = await directory_account(iban)
+        tx[f"{side}_status"] = row["status"] if row else "DESCONHECIDA"
+        tx[f"{side}_user"] = row["user_id"] if row else None
+
+
+async def resume_pending(reachable: set) -> None:
+    """Transferências PENDENTE (um nó estava em baixo): quando TODOS os nós envolvidos voltam a
+    responder, executa-as de novo (LOCAL ou 2PC) até ficarem CONFIRMADA (ou ABORTADA por saldo,
+    limites, etc.). Nunca duplicam: a mesma linha do log, o mesmo tx_id."""
+    async with core.connection() as conn:
+        pending = await (await conn.execute(
+            "SELECT * FROM transactions WHERE state = 'PENDENTE' ORDER BY created_at")).fetchall()
+    for tx in pending:
+        tx_id = str(tx["tx_id"])
+        # The shards where the legs run (in custody: not the account's region, which may still be down).
+        where = {tx.get("debit_region") or tx["from_region"], tx.get("credit_region") or tx["to_region"]}
+        if tx_id in in_flight or not where <= reachable:
+            continue
+        in_flight.add(tx_id)
+        try:
+            if tx.get("routing") == "CUSTODIA":
+                await add_custody_fields(tx)
+            async with core.connection() as conn:
+                await conn.execute("UPDATE transactions SET failure_reason = NULL WHERE tx_id = %s", (tx["tx_id"],))
+            await event(tx["tx_id"], "RETOMADA", reason="nós disponíveis de novo")
+            if tx["kind"] == "LOCAL":
+                await run_local(tx)
+            else:
+                await run_2pc(tx)
+            view = await tx_view(tx["tx_id"])
+            log.info(f"recovery: transferência pendente retomada -> {view['state']}", extra=log_extra(tx_id=tx_id))
+            if view["settlement_status"] == "PENDENTE":
+                start_settlement(tx_id)
+            await audit.write("TRANSFERENCIA_RETOMADA", tx_id=tx_id, state=view["state"], reason=view.get("failure_reason"))
+        except Exception as exc:
+            log.warning(f"recovery: retomar {tx_id} falhou: {exc!r}")
+        finally:
+            in_flight.discard(tx_id)
+
+
+# --- Custody: forward to the destination region when it is back ------------------------------
+#
+# A forward is a 2PC of its own (xid format 2) between the shard that kept the money
+# (holder) and the account's region (target):
+#   holder: custody balance -> 0, pending movements marked as forwarded
+#   target: the pending movements replayed in the account's statement (via_region = holder),
+#           balance += remaining amount
+# Durable log: custody_forwards in pg-core (PREPARANDO -> DECISAO_COMMIT -> CONCLUIDO), same
+# presumed-abort recovery as the transfers.
+
+forward_retry_at: dict[str, float] = {}       # target iban -> do not retry before (after a failure)
+FORWARD_RETRY_SECONDS = 60
+
+
+async def forward_state(fid, state: str, reason: str | None = None, **values) -> None:
+    sets = ", ".join(f"{k} = %({k})s" for k in values)
+    async with core.connection() as conn:
+        await conn.execute(
+            f"UPDATE custody_forwards SET state = %(state)s, reason = COALESCE(%(reason)s, reason), "
+            f"updated_at = now(){', ' + sets if sets else ''} WHERE forward_id = %(fid)s",
+            {"state": state, "reason": reason, "fid": fid, **values})
+
+
+async def forward_custody(shards: dict) -> None:
+    for holder, (conn, _, _) in shards.items():
+        try:
+            pending = await (await conn.execute(
+                """SELECT DISTINCT c.target_iban, c.target_region FROM custody_accounts c
+                   JOIN custody_movements m ON m.target_iban = c.target_iban AND m.forwarded_by IS NULL""")).fetchall()
+        except psycopg.errors.UndefinedTable:
+            return   # migrations not applied yet
+        for row in pending:
+            iban, target = row["target_iban"], row["target_region"]
+            if target not in shards or time.monotonic() < forward_retry_at.get(iban, 0):
+                continue      # destination still down (or failed recently): keep it in custody
+            try:
+                await forward_one(holder, iban, target)
+            except Exception as exc:
+                forward_retry_at[iban] = time.monotonic() + FORWARD_RETRY_SECONDS
+                log.warning(f"reencaminhamento de {iban} ({holder} -> {target}) falhou: {exc!r}")
+
+
+async def forward_one(holder: str, iban: str, target: str) -> None:
+    fid = uuid.uuid4()
+    async with core.connection() as conn:
+        await conn.execute(
+            """INSERT INTO custody_forwards (forward_id, holder_region, target_iban, target_region, state)
+               VALUES (%s, %s, %s, %s, 'PREPARANDO')""", (fid, holder, iban, target))
+    in_flight.add(str(fid))
+    prepared: dict[str, psycopg.AsyncConnection] = {}
+    try:
+        # ---- Phase 1. Holder first: it locks the custody account and reads the history. ----
+        try:
+            hconn = await connect_shard(holder)
+            prepared[holder] = hconn
+            await hconn.tpc_begin(hconn.xid(FORWARD_FORMAT, str(fid), holder))
+            box = await (await hconn.execute(
+                "SELECT * FROM custody_accounts WHERE target_iban = %s FOR UPDATE", (iban,))).fetchone()
+            moves = await (await hconn.execute(
+                "SELECT * FROM custody_movements WHERE target_iban = %s AND forwarded_by IS NULL ORDER BY id",
+                (iban,))).fetchall()
+            if not moves:
+                raise custody.CustodyError("nada a reencaminhar")
+            if custody.net_of(moves) != box["balance"]:
+                raise custody.CustodyError(f"saldo retido {box['balance']} difere do histórico {custody.net_of(moves)}")
+            await hconn.execute("UPDATE custody_movements SET forwarded_by = %s WHERE id = ANY(%s)",
+                                (fid, [m["id"] for m in moves]))
+            if box["balance"] > 0:
+                await hconn.execute(
+                    """INSERT INTO custody_movements (target_iban, tx_id, type, amount, currency, balance_after,
+                           origin, counterparty, forwarded_by)
+                       VALUES (%s, %s, 'DEBITO', %s, %s, 0, 'REENCAMINHAMENTO', %s, %s)""",
+                    (iban, fid, box["balance"], box["currency"], iban, fid))
+            await hconn.execute("UPDATE custody_accounts SET balance = 0, updated_at = now() WHERE target_iban = %s",
+                                (iban,))
+            await hconn.tpc_prepare()
+
+            tconn = await connect_shard(target)
+            prepared[target] = tconn
+            await tconn.tpc_begin(tconn.xid(FORWARD_FORMAT, str(fid), target))
+            account = await (await tconn.execute(
+                "SELECT * FROM accounts WHERE iban = %s FOR UPDATE", (iban,))).fetchone()
+            if account is None or account["status"] == "ENCERRADA":
+                raise custody.CustodyError(f"conta de destino {'inexistente' if account is None else 'ENCERRADA'}")
+            if account["currency"] != box["currency"]:
+                raise custody.CustodyError("moeda da conta difere da custódia")
+            replayed, final = custody.replay(account["balance"], moves)
+            for r in replayed:
+                m = r.move
+                await tconn.execute(
+                    """INSERT INTO movements (iban, tx_id, type, amount, currency, balance_after, origin, via_region,
+                           created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (iban, m["tx_id"], m["type"], m["amount"], m["currency"], r.balance_after, m["origin"], holder,
+                     m["created_at"]))
+            await tconn.execute("UPDATE accounts SET balance = %s WHERE iban = %s", (final, iban))
+            await tconn.tpc_prepare()
+        except Exception as exc:
+            for conn in prepared.values():
+                try:
+                    await conn.tpc_rollback()
+                except Exception:
+                    pass   # left prepared: the recovery finds it (ABORTADO -> rollback)
+            await forward_state(fid, "ABORTADO", repr(exc) if not isinstance(exc, custody.CustodyError) else str(exc))
+            raise
+
+        # ---- Decision point ----
+        await forward_state(fid, "DECISAO_COMMIT", amount=box["balance"], currency=box["currency"],
+                            movements=len(moves))
+        # ---- Phase 2 ----
+        pending = []
+        for region, conn in prepared.items():
+            try:
+                await conn.tpc_commit()
+            except Exception:
+                pending.append(region)       # the decision is durable: recovery finishes it
+        if not pending:
+            await forward_state(fid, "CONCLUIDO")
+        forward_retry_at.pop(iban, None)
+        log.info(f"custódia reencaminhada: {iban} {holder} -> {target}: {len(moves)} movimentos, "
+                 f"saldo restante {box['balance']} {box['currency']}")
+        tx_ids = list({m["tx_id"] for m in moves})
+        async with core.connection() as conn:
+            # Timeline of each transfer involved: it now really is in the destination region.
+            await conn.execute(
+                "INSERT INTO tx_events (tx_id, event, detail) SELECT tx_id, %s, %s FROM transactions WHERE tx_id = ANY(%s)",
+                (f"REENCAMINHADA_PARA_{target}",
+                 json.dumps({"de": holder, "conta": iban, "reencaminhamento": str(fid)}), tx_ids))
+        await audit.write("CUSTODIA_REENCAMINHADA", forward_id=str(fid), iban=iban, holder=holder, target=target,
+                          amount=str(box["balance"]), currency=box["currency"], movements=len(moves))
+    finally:
+        in_flight.discard(str(fid))
+        for conn in prepared.values():
+            await conn.close()
+
+
+FORWARD_AS_TX_STATE = {"CONCLUIDO": "CONFIRMADA", "ABORTADO": "ABORTADA"}
+
+
+async def recover_forwards(shards: dict) -> None:
+    """Forwards interrupted by a crash (same rules as the transfers: presumed abort)."""
+    try:
+        async with core.connection() as conn:
+            rows = await (await conn.execute("SELECT * FROM custody_forwards")).fetchall()
+    except psycopg.errors.UndefinedTable:
+        return
+    by_id = {str(r["forward_id"]): r for r in rows}
+    for row in rows:
+        fid = str(row["forward_id"])
+        if row["state"] not in ("PREPARANDO", "DECISAO_COMMIT") or fid in in_flight:
+            continue
+        regions = (row["holder_region"], row["target_region"])
+        if any(r not in shards for r in regions):
+            continue
+        age = (logic.utcnow() - row["updated_at"]).total_seconds()
+        action = logic.recovery_action(row["state"], "DISTRIBUIDA", age)
+        if action == "WAIT":
+            continue
+        for region in regions:
+            conn, _, fxids = shards[region]
+            if fid in fxids:
+                xid = fxids.pop(fid)
+                await (conn.tpc_commit(xid) if action == "COMMIT" else conn.tpc_rollback(xid))
+        await forward_state(row["forward_id"], "CONCLUIDO" if action == "COMMIT" else "ABORTADO",
+                            None if action == "COMMIT" else "recuperação: presumed abort")
+        log.warning(f"recovery: reencaminhamento {fid} -> {action}")
+    # Prepared forwards the log does not account for.
+    for region, (conn, _, fxids) in shards.items():
+        for fid, xid in list(fxids.items()):
+            if fid in in_flight:
+                continue
+            row = by_id.get(fid)
+            state = FORWARD_AS_TX_STATE.get(row["state"], row["state"]) if row else None
+            age = (logic.utcnow() - row["updated_at"]).total_seconds() if row else None
+            action = logic.orphan_action(state, age)
+            if action == "COMMIT":
+                await conn.tpc_commit(xid)
+            elif action == "ROLLBACK":
+                await conn.tpc_rollback(xid)
+
+
+# --- Account directory (validates accounts of a region that is down) -------------------------
+
+DIRECTORY_SYNC_SECONDS = 30
+_last_directory_sync = 0.0
+
+
+async def sync_directory(shards: dict) -> None:
+    """Copies iban -> owner, currency, status of every reachable shard to pg-core. The api
+    also writes it when it creates an account; this keeps status changes up to date."""
+    global _last_directory_sync
+    if time.monotonic() - _last_directory_sync < DIRECTORY_SYNC_SECONDS:
+        return
+    _last_directory_sync = time.monotonic()
+    for region, (conn, _, _) in shards.items():
+        rows = await (await conn.execute("SELECT iban, user_id, currency, status FROM accounts")).fetchall()
+        if not rows:
+            continue
+        async with core.connection() as cconn:
+            async with cconn.cursor() as cur:
+                await cur.executemany(
+                    """INSERT INTO account_directory (iban, user_id, region, currency, status)
+                       VALUES (%s, %s, %s, %s, %s)
+                       ON CONFLICT (iban) DO UPDATE SET user_id = EXCLUDED.user_id, currency = EXCLUDED.currency,
+                           status = EXCLUDED.status, updated_at = now()
+                       WHERE (account_directory.status, account_directory.currency)
+                             IS DISTINCT FROM (EXCLUDED.status, EXCLUDED.currency)""",
+                    [(r["iban"], r["user_id"], region, r["currency"], r["status"]) for r in rows])
 
 
 async def recovery_loop() -> None:

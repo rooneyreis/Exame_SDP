@@ -21,8 +21,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from common import limits
 from common.db import REGIONS, region_of_iban
 
-from .main import (account_out, audit, core, current_claims, load_account, log, read_connection, record,
-                   require_permission, settings, shards)
+from .main import (account_out, audit, core, current_claims, custody_account, directory_upsert, load_account, log,
+                   read_connection, record, region_down, require_permission, settings, shards)
 from .schemas import AccountRequestIn, Decision, DirectAccountIn
 
 router = APIRouter()
@@ -44,13 +44,17 @@ def jsonable(row: dict) -> dict:
 
 async def client_accounts(user_id: str) -> tuple[list[dict], list[str]]:
     """(contas de todas as regiões, regiões indisponíveis). Uma região em baixo não faz
-    falhar as outras: o cliente continua a ver (e a usar) as contas que estão acessíveis."""
+    falhar as outras: o cliente continua a ver (e a usar) as contas que estão acessíveis.
+    As contas de uma região TOTALMENTE em baixo aparecem com o valor retido em custódia
+    noutros shards (region_unavailable=true), que o cliente pode usar."""
     async def fetch(region: str):
         async with read_connection(region) as conn:
             return await (await conn.execute(
                 "SELECT * FROM accounts WHERE user_id = %s ORDER BY created_at, iban", (user_id,))).fetchall()
 
     async def guarded(region: str):
+        if await region_down(region):
+            return region, None
         try:
             return region, await asyncio.wait_for(fetch(region), SHARD_READ_TIMEOUT)
         except Exception as exc:          # timeout, pool timeout, OperationalError...
@@ -60,6 +64,18 @@ async def client_accounts(user_id: str) -> tuple[list[dict], list[str]]:
     results = await asyncio.gather(*(guarded(r) for r in REGIONS))
     rows = [a for _, part in results if part for a in part]
     unavailable = [r for r, part in results if part is None]
+    for region in unavailable:
+        if not await region_down(region, fresh=True):
+            continue      # slow but not down (e.g. failover in progress): nothing to show
+        async with core.connection() as conn:
+            known = await (await conn.execute(
+                "SELECT iban FROM account_directory WHERE user_id = %s AND region = %s ORDER BY iban",
+                (user_id, region))).fetchall()
+        for d in known:
+            try:
+                rows.append(await custody_account(d["iban"]))
+            except Exception as exc:
+                log.warning(f"valor retido de {d['iban']} ilegível: {exc!r}")
     return rows, unavailable
 
 
@@ -141,6 +157,7 @@ async def open_account_in_shard(user_id: str, region: str, currency: str) -> tup
                 """INSERT INTO accounts (iban, user_id, currency, daily_limit)
                    VALUES ('GS-' || %s || '-' || lpad(nextval('iban_seq')::text, 8, '0'), %s, %s, %s)
                    RETURNING *""", (region, user_id, currency, daily))).fetchone()
+    await directory_upsert(row)
     log.info(f"conta {row['iban']} criada no shard {region}")
     await audit.write("CONTA_CRIADA", iban=row["iban"], user_id=str(user_id), region=region, currency=currency)
     return row, True
@@ -237,6 +254,9 @@ async def request_closure(iban: str, request: Request, claims: dict = Depends(re
     account = await load_account(iban)
     if str(account["user_id"]) != claims["sub"]:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conta não encontrada")
+    if account.get("unavailable"):
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
+                            f"a região {region_of_iban(iban)} está indisponível: tente encerrar quando voltar")
     if account["status"] == "ENCERRADA":
         raise HTTPException(status.HTTP_409_CONFLICT, "a conta já está encerrada")
     if account["balance"] != 0:
@@ -303,9 +323,11 @@ async def close_account(iban: str) -> dict:
                 if account["balance"] != 0:
                     raise HTTPException(status.HTTP_409_CONFLICT,
                                         f"só é possível encerrar com saldo 0 (saldo {account['balance']:.2f} {account['currency']})")
-                return await (await conn.execute(
+                closed = await (await conn.execute(
                     "UPDATE accounts SET status = 'ENCERRADA', closed_at = now() WHERE iban = %s RETURNING *",
                     (iban,))).fetchone()
+        await directory_upsert(closed)
+        return closed
     except psycopg.errors.LockNotAvailable:
         raise HTTPException(status.HTTP_409_CONFLICT, "a conta tem uma transação em curso (bloqueada)")
 

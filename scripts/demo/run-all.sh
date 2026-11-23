@@ -23,6 +23,7 @@ SCENARIOS=(
   14-regiao-africa
   15-contas-multiplas
   16-dfs-nfs
+  17-custodia-regiao-em-baixo
 )
 
 start=$(date +%s)

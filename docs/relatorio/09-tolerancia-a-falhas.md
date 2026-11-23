@@ -9,7 +9,8 @@
 | 10 | processo do coordenador, depois da decisão | Docker reinicia-o (`restart: unless-stopped`); recovery lê `DECISAO_COMMIT` e conclui em ~1 s; o cliente repete com a mesma `Idempotency-Key` sem duplicar. | `docs/evidencias/10-crash-coordenador.log` |
 | (teste) | processo do coordenador, antes da decisão | Presumed abort: após 30 s, `ROLLBACK PREPARED` nos dois shards. | `test_crash_before_decision_is_presumed_abort` |
 | 13A | **rede** do `pg-america` depois do PREPARE | `COMMIT_PENDENTE_AM` (keepalive/tcp_user_timeout detetam a partição); a transação preparada sobrevive no nó isolado; ao repor a rede, `RECUPERACAO_COMMIT_AM`. | `docs/evidencias/13-particao-rede.log` |
-| 13B | **rede** do `pg-america` antes do PREPARE | A América não pode votar → `VOTO_NAO_AM`, `ROLLBACK_EU`, `ABORTADA`; o saldo de origem não muda. | idem |
+| 13B | **rede** do `pg-america` antes do PREPARE | A América não responde (não é um voto NÃO) → `ROLLBACK_EU`, `AGUARDA_NO_AM`, **`PENDENTE`**; o saldo de origem não muda. Quando a rede volta, o recovery loop retoma-a (`RETOMADA`) e fica `CONFIRMADA`, com um único débito. | idem |
+| 17 | **região inteira** `pg-africa` + réplica | Transferências e depósitos para contas AF são confirmados e ficam em custódia noutro shard ativo (`routing=CUSTODIA`, `DESVIO_CUSTODIA`); a titular usa o valor retido até ao montante guardado; quando África volta, um 2PC próprio reencaminha o saldo restante e reproduz o histórico no extrato (`REENCAMINHADA_PARA_AF`). Primário em baixo com réplica ativa **não** ativa a custódia (espera pelo failover). | `docs/evidencias/17-custodia-regiao-em-baixo.log`, `test_phase11_custody.py` |
 | (teste) | `legacy-bank` | Transferências não são afetadas; liquidação fica `PENDENTE` e é reenviada quando o legado volta. | `test_settlement_waits_while_legacy_is_down` |
 
 ## Notas para a explicação teórica

@@ -1,11 +1,12 @@
 
 ══════ Cenário 12 — TLS obrigatório em todos os canais ══════
-(2026-11-20T13:25:21Z)
+(2026-11-23T21:58:15Z)
 
 ▶ 1. PostgreSQL sem TLS (sslmode=disable) → recusado pelo pg_hba.conf
   ✔ pg-core: ligação sem TLS rejeitada ("no encryption")
   ✔ pg-europa: ligação sem TLS rejeitada ("no encryption")
   ✔ pg-america: ligação sem TLS rejeitada ("no encryption")
+  ✔ pg-africa: ligação sem TLS rejeitada ("no encryption")
 
 ▶ 2. PostgreSQL com TLS mas a apontar para o servidor errado → certificado não corresponde ao nome
   ✔ verify-full detetou o servidor falso
@@ -26,12 +27,8 @@
      api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
      api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
      api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
-     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
-     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
-     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
-     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
      replicator | pg-europa-replica | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
-    (18 rows)
+    (14 rows)
     
   ✔ 0 ligações de rede sem TLS
 
@@ -47,7 +44,14 @@
     recusado: RemoteDisconnected
   ✔ api-2 recusou HTTP sem TLS
 
-▶ 7. Protocolos e cadeia de certificados no nginx
+▶ 7. Serviços internos (auth, coordinator, banco legado Java): só TLS, verificado pela CA local
+  $ docker exec coordinator python  (HTTP simples e depois HTTPS a cada serviço)
+    auth.global.local            HTTP: recusado (RemoteDisconnected) TLS: TLSv1.3 TLS_AES_256_GCM_SHA384  cert CN=auth.global.local
+    coordinator.global.local     HTTP: recusado (RemoteDisconnected) TLS: TLSv1.3 TLS_AES_256_GCM_SHA384  cert CN=coordinator.global.local
+    legacy-bank.global.local     HTTP: recusado (RemoteDisconnected) TLS: TLSv1.3 TLS_AES_256_GCM_SHA384  cert CN=legacy-bank.global.local
+  ✔ nenhum serviço interno aceita texto simples; o legado Java fala TLS com certificado da CA
+
+▶ 8. Protocolos e cadeia de certificados no nginx
   $ openssl s_client -connect localhost:443 -CAfile infra/certs/ca.crt
     subject=C=MZ, O=Global Scale Corporation, CN=nginx.global.local
     issuer=C=MZ, O=Global Scale Corporation, CN=Global Scale Local CA
@@ -56,4 +60,4 @@
   ✔ TLS 1.1 recusado (mínimo TLS 1.2)
 
 ══════ Cenário 12 concluído ══════
-(2026-11-20T13:25:29Z)
+(2026-11-23T21:58:21Z)

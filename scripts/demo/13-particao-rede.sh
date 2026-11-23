@@ -2,7 +2,7 @@
 # Scenario 13: NETWORK failure (the node keeps running, but is unreachable):
 #   A) partition AFTER both shards prepared -> decision COMMIT is durable -> the recovery
 #      loop finishes it when the network comes back (money is not lost).
-#   B) partition BEFORE America prepares    -> America cannot vote -> ABORTADA, Europa is
+#   B) partition BEFORE America prepares    -> America cannot answer -> PENDENTE (Europa rolled back), then completed when the network is back; Europa is
 #      rolled back (money never leaves the account).
 source "$(dirname "$0")/lib.sh"
 
@@ -63,10 +63,19 @@ LAST_STATUS=$(tail -1 "$OUT"); LAST_BODY=$(head -n -1 "$OUT")
 info "resposta: HTTP $LAST_STATUS  state=$(echo "$LAST_BODY" | jq -r .state)"
 info "motivo: $(echo "$LAST_BODY" | jq -r .failure_reason)"
 timeline
-[[ "$(echo "$LAST_BODY" | jq -r .state)" == ABORTADA ]] && ok "a América não votou → ABORTADA; a Europa fez ROLLBACK" || fail "esperava ABORTADA"
+[[ "$(echo "$LAST_BODY" | jq -r .state)" == PENDENTE ]] && ok "a América não respondeu → PENDENTE (não abortada); a Europa fez ROLLBACK" || fail "esperava PENDENTE"
+TX=$(echo "$LAST_BODY" | jq -r .tx_id)
 A_FROM=$(balance $FROM)
-decimal_true "D('$B_FROM') == D('$A_FROM')" && ok "saldo de $FROM inalterado ($A_FROM EUR): o dinheiro não saiu" || fail "dinheiro saiu!"
+decimal_true "D('$B_FROM') == D('$A_FROM')" && ok "saldo de $FROM inalterado ($A_FROM EUR) enquanto está pendente: o dinheiro não saiu" || fail "dinheiro saiu!"
 restore_network
+pause
+
+step "B2. A rede volta: o recovery loop retoma a transferência pendente e conclui-a"
+login auditor@globalscale.test "$STAFF_PASSWORD"
+wait_tx_state "$TX" CONFIRMADA 90 || fail "a transferência pendente não foi concluída"
+ok "transferência retomada e CONFIRMADA quando o nó voltou"
+timeline
+decimal_true "D('$B_FROM') - 40 == D('$(balance $FROM)')" && ok "−40.00 EUR debitados uma única vez" || fail "saldo errado"
 pause
 
 step "C. Verificação final"

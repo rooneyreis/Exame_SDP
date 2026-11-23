@@ -21,8 +21,8 @@ from common.audit import verify_chain
 from common.db import REGIONS, is_valid_iban, region_of_iban
 from common.transfers import transfer_tx_id
 
-from .main import (account_out, core, eur_value, load_account, log, record, require_permission, settings, shards,
-                   signed_post)
+from .main import (account_out, core, directory_upsert, eur_value, load_account, log, record, require_permission,
+                   settings, shards, signed_post)
 from .schemas import AccountUpdate, Decision, SettingsUpdate, TransferRequestIn
 
 router = APIRouter()
@@ -289,6 +289,7 @@ async def update_account(iban: str, body: AccountUpdate, request: Request,
             sets = ", ".join(f"{k} = %s" for k in changes)
             new = await (await conn.execute(f"UPDATE accounts SET {sets} WHERE iban = %s RETURNING *",
                                             [*changes.values(), iban])).fetchone()
+    await directory_upsert(new)          # a conta bloqueada também o fica se a região cair
     await record("CONTA_ALTERADA", claims, request, iban=iban,
                  before={k: str(old[k]) for k in changes}, after={k: str(v) for k, v in changes.items()})
     return account_out(new)

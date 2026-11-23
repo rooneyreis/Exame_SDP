@@ -10,7 +10,7 @@ Clientes da Europa, da América e de África têm os dados em **nós de base de 
 | Processamento e Transações | coordenador 2PC (`services/coordinator`), shards PostgreSQL com réplicas e failover |
 | Serviços Web e Interoperabilidade | API REST FastAPI + banco parceiro em Java 21 com XML assinado; análise OMG/OMA |
 | Segurança | TLS em tudo, JWT RS256 descentralizado, Ed25519 + SHA-256, AES-256-GCM em repouso, Argon2id |
-| Documentação e Defesa | este README, [`docs/relatorio/`](docs/relatorio/README.md), 17 cenários (00–16) de demo com evidências |
+| Documentação e Defesa | este README, [`docs/relatorio/`](docs/relatorio/README.md), 18 cenários (00–17) de demo com evidências |
 
 Mapa de cada ponto que o docente espera ver → código → evidência: [`docs/relatorio/00-requisitos-do-docente.md`](docs/relatorio/00-requisitos-do-docente.md).
 
@@ -69,7 +69,7 @@ git clone https://github.com/rooneyreis/Exame_SDP.git ~/global-scale-system && c
 docker compose up -d --wait   # 14 contentores
 ./scripts/seed.sh             # câmbios, 3 contas por shard, staff e 9 clientes
 make test                     # testes unitários + integração (~5 min)
-./scripts/demo/run-all.sh     # os 17 cenários de demonstração (~6 min)
+./scripts/demo/run-all.sh     # os 18 cenários de demonstração (~7 min)
 ```
 
 Documentação interativa da API: `https://localhost/docs` (OpenAPI gerada pelo FastAPI).
@@ -240,6 +240,24 @@ sequenceDiagram
 - **Contrapressão**: máximo de 20 transações em simultâneo no coordenador (semáforo asyncio).
 
 Respostas: `201` CONFIRMADA, `200` repetição idempotente, `202` decisão tomada mas commit pendente num shard em baixo, `422` ABORTADA (com `failure_reason`), `503` coordenador indisponível (com `tx_id`).
+
+### Região totalmente em baixo: custódia e reencaminhamento
+
+Se uma região fica **totalmente** inacessível (primário **e** réplica), as operações destinadas às suas contas não são recusadas. Se só cai o primário e a réplica responde, nada disto se aplica: as escritas esperam pelo failover, como antes.
+
+1. **Validação sem a região**: o `account_directory` no pg-core guarda `iban → titular, moeda, estado`. A api escreve-o quando cria ou altera uma conta, e o coordenador sincroniza-o a partir dos shards a cada 30 s.
+2. **Crédito em custódia**: uma transferência (ou depósito) para uma conta da região em baixo é confirmada. O crédito fica numa **conta de custódia** (`custody_accounts` / `custody_movements`) com o IBAN de destino, no primeiro shard ativo pela ordem global, ou no que já guarda valor para essa conta. Fica na moeda da conta de destino, convertido no momento.
+3. **Rastreabilidade**: a transação regista `routing = CUSTODIA`, `debit_region` e `credit_region` (onde cada perna correu), e o evento `DESVIO_CUSTODIA` diz de onde veio, para onde ia e onde ficou. Cada movimento em custódia guarda a contraparte.
+4. **Uso do valor retido**: enquanto a região está em baixo, `GET /accounts` mostra a conta com `region_unavailable: true`, `balance` = valor retido e `held_in` = shards onde está. O titular pode transferir e o operador pode levantar **até esse valor**. O débito sai da custódia, e o saldo antigo na região em baixo fica indisponível até ela voltar.
+5. **Reencaminhamento automático**: quando a região volta, o recovery loop do coordenador faz um **2PC próprio** (xid formato 2, log `custody_forwards`) entre o shard que guardou e a região de destino:
+   - a custódia fica a 0;
+   - os movimentos feitos entretanto são **reproduzidos no extrato** da conta, com a data original e `via_region`;
+   - o saldo recebe o **valor restante** (créditos − gastos).
+
+   Cada transferência envolvida recebe o evento `REENCAMINHADA_PARA_<região>`. Um crash a meio é resolvido como nas transferências (presumed abort).
+6. `GET /admin/consistency` conta as pernas em custódia como estando na região da conta. Depois do reencaminhamento, conta-as no extrato reproduzido. Nada é perdido nem duplicado.
+
+Limitações: o valor fica utilizável no nó de custódia, mas o saldo que a conta já tinha na região em baixo não, porque só ela o tem. O estado da conta no diretório pode ter até 30 s de atraso face ao shard.
 
 ### Injeção de falhas (`POST /admin/chaos`, só admin)
 
@@ -423,6 +441,7 @@ Cada script imprime o que vai fazer, executa com `curl --cacert infra/certs/ca.c
 | `14-regiao-africa.sh` | região África: registo AF → KYC → conta GS-AF em MZN no pg-africa; AF → AF local; 2PC EU → AF (EUR → MZN) e AF → AM (ordem EU → AM → AF); `fail_participant=AF` → rollback da Europa; failover e failback do shard África |
 | `15-contas-multiplas.sh` | cliente registado na Europa pede uma conta em África → o operador aprova (aprovar outra vez não duplica) → a conta só existe no pg-africa → transferência entre contas próprias EU → AF (2PC + câmbio, não conta para o limite) → um envio a terceiros atualiza `/me/limits` |
 | `16-dfs-nfs.sh` | `/audit` montado por NFS v4 em 4 nós; ficheiro escrito num nó lido nos outros; logs de auditoria por nó e relatório partilhado lidos do NFS |
+| `17-custodia-regiao-em-baixo.sh` | África totalmente em baixo → transferência EU → AF confirmada em custódia na Europa → a titular usa o valor retido (transferência e levantamento, nunca acima do retido) → África volta → saldo restante e histórico reencaminhados automaticamente → consistência OK |
 
 ```bash
 ./scripts/demo/run-all.sh                 # todos, por ordem
@@ -508,7 +527,7 @@ global-scale-system/
 │   └── keys/                   # gerado por gen-keys.sh (não versionado)
 ├── scripts/
 │   ├── gen-certs.sh, gen-keys.sh, seed.sh, migrate.sh, failover.sh, test.sh, deploy.sh, rbac-smoke.sh
-│   └── demo/                   # 17 cenários (00–16) + run-all.sh + lib.sh + concurrency.py
+│   └── demo/                   # 18 cenários (00–17) + run-all.sh + lib.sh + concurrency.py
 ├── tests/
 │   ├── unit/                   # lógica pura, sem Docker
 │   └── integration/            # contra o ambiente a correr

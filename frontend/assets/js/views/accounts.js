@@ -37,7 +37,7 @@ async function list(root, claims) {
     ${pageHead("Contas", "As suas contas em todas as regiões e moedas.",
       `<a class="btn btn-secondary" href="#/transfer">${icon("transfer")} Transferir</a>
        <button class="btn btn-primary" id="new-account" ${slots > 0 ? "" : "disabled title=\"Atingiu o máximo de contas\""}>${icon("plus")} Abrir nova conta</button>`)}
-    ${me.unavailable_regions?.length ? `<div class="banner banner-warn" style="margin-bottom:var(--gap)">${icon("alert")}<span>A região ${me.unavailable_regions.map((r) => esc(regionName(r))).join(", ")} está temporariamente indisponível: as contas dessa região não aparecem até o serviço voltar. As restantes funcionam normalmente.</span></div>` : ""}
+    ${me.unavailable_regions?.length ? `<div class="banner banner-warn" style="margin-bottom:var(--gap)">${icon("alert")}<span>A região ${me.unavailable_regions.map((r) => esc(regionName(r))).join(", ")} está temporariamente indisponível. O dinheiro recebido entretanto fica guardado noutro centro de dados e pode ser usado já; quando a região voltar, o saldo e os movimentos são transferidos automaticamente. As restantes contas funcionam normalmente.</span></div>` : ""}
     <section class="panel"><div class="metric-strip" style="--n:4">
       <div class="metric"><span class="m-label">${icon("wallet")} Património total</span><span class="m-value">${esc(masked(money(total, home)))}</span><span class="m-sub">convertido para ${esc(home)} ao câmbio do dia</span></div>
       <div class="metric"><span class="m-label">${icon("bank")} Contas ativas</span><span class="m-value">${open.length}<span class="soft" style="font-size:1rem"> / ${max}</span></span><span class="m-sub">${slots > 0 ? `pode abrir mais ${slots}` : "máximo atingido"}</span></div>
@@ -54,7 +54,7 @@ async function list(root, claims) {
           <div><div class="metric" style="padding:0"><span class="m-value">${esc(masked(money(a.balance, a.currency)))}</span></div>
             <div class="meta num" style="margin-top:2px">${conv != null ? `≈ ${esc(masked(money(conv, home)))}` : "&nbsp;"}</div>
             <div class="mono meta" style="margin-top:6px">${esc(iban(a.iban))}</div></div>
-          <div class="meta">${closing.has(a.iban) ? `${icon("clock")} Encerramento pedido` : a.status === "ENCERRADA" ? `Encerrada em ${esc(date(a.closed_at))}` : `Limite da conta ${esc(money(a.daily_limit, a.currency))}/dia`}</div>
+          <div class="meta">${a.region_unavailable ? `${icon("alert")} Região indisponível · valor retido em ${esc(Object.keys(a.held_in || {}).map(regionName).join(", ") || "—")}, utilizável` : closing.has(a.iban) ? `${icon("clock")} Encerramento pedido` : a.status === "ENCERRADA" ? `Encerrada em ${esc(date(a.closed_at))}` : `Limite da conta ${esc(money(a.daily_limit, a.currency))}/dia`}</div>
         </a>`; }).join("")}
         ${slots > 0 ? `<button class="tile add" id="new-account-tile">${icon("plus")}<span>Abrir nova conta</span><span class="meta">Europa, América ou África · EUR, USD ou MZN</span></button>` : ""}</div></div>
       <aside class="c-4 stack-gap">
