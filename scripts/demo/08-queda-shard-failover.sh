@@ -1,68 +1,55 @@
 #!/usr/bin/env bash
-# Scenario 08: the primary of the Europa shard goes down -> failover.sh promotes the replica
-# -> EU transfers work again WITHOUT changing any configuration (multi-host conninfo).
-# At the end the original topology is restored (failback).
+# Scenario 08: the node pg-europa goes down. Its copy, kept on pg-america, takes over the
+# role of the Europa database BY ITSELF within seconds: transfers keep working without any
+# command and without changing configuration. When pg-europa comes back it re-syncs from
+# the copy and takes its role back, also by itself.
 source "$(dirname "$0")/lib.sh"
 
-title "Cenário 08 — Queda do primário de um shard e failover"
-show_db_roles() {
-  with_user admin@globalscale.test "$STAFF_PASSWORD" GET /admin/status >/dev/null
-  echo "$LAST_BODY" | jq -r '.databases | to_entries[] | select(.key | startswith("pg-europa")) |
-    "    \(.key): \(if .value.up then .value.role + " (réplicas a receber: \(.value.replicas_streaming))" else "EM BAIXO" end)"'
-}
+title "Cenário 08 — Um nó cai e a cópia noutro nó assume o seu papel"
 
-step "1. Situação inicial"
-show_db_roles
+step "1. Situação inicial: cada base no seu nó, com a cópia no nó seguinte do anel"
+topology
 login ana.silva@cliente.test "$CLIENT_PASSWORD"
 transfer GS-EU-00000001 GS-EU-00000002 1.00 "demo08a-$(date +%s%N)"
-expect 201 "transferência EU → EU funciona"
+expect 201 "transferência EU → EU no pg-europa"
+B_BEFORE=$(balance GS-EU-00000001)
 pause
 
-step "2. Derrubar o primário pg-europa"
+step "2. Derrubar o nó pg-europa (sem mais nenhum comando)"
 cmd "docker stop pg-europa"; docker stop pg-europa >/dev/null
-show_db_roles
+ok "pg-europa parado: a base da Europa (e a cópia de África que ele guardava) ficaram em baixo"
+info "o supervisor do pg-america vê que o dono desapareceu e promove a cópia..."
+SECS=$(wait_role pg-america 5433 f 40) || fail "a cópia não assumiu o papel"
+ok "a cópia da Europa em pg-america:5433 é agora o PRIMÁRIO (assumiu em ${SECS}s)"
+docker logs pg-america 2>&1 | grep -E "supervisor pg-america/EU" | grep -E "PROMOÇÃO|síncrona|assíncrona" | tail -2 | sed 's/^/    /'
+topology
+pause
+
+step "3. A Europa continua a aceitar operações, sem mudar configuração nenhuma"
+info "(os serviços ligam-se com host=pg-europa,pg-america port=5432,5433 target_session_attrs=read-write)"
 transfer GS-EU-00000001 GS-EU-00000002 1.00 "demo08b-$(date +%s%N)"
-info "durante a falha: HTTP $LAST_STATUS — $(echo "$LAST_BODY" | jq -r '.detail // .failure_reason // .state')"
-[[ "$LAST_STATUS" != 201 ]] && ok "sem primário na Europa não há escritas (a réplica só aceita leituras)" || fail "não devia funcionar"
-api GET /accounts
-expect 200 "leituras continuam a funcionar a partir da réplica (target_session_attrs=any)"
-show '[.[] | {iban, balance}]'
-pause
-
-step "3. Failover: promover a réplica"
-cmd "./scripts/failover.sh EU"
-./scripts/failover.sh EU | sed 's/^/    /'
-show_db_roles
-pause
-
-step "4. As transferências voltam a funcionar, sem mudar configuração nenhuma"
-info "(os serviços ligam-se com host=pg-europa…,pg-europa-replica… target_session_attrs=read-write)"
-transfer GS-EU-00000001 GS-EU-00000002 1.00 "demo08c-$(date +%s%N)"
-expect 201 "LOCAL EU → EU no novo primário"
-transfer GS-EU-00000001 GS-AM-00000002 1.00 "demo08d-$(date +%s%N)"
-expect 201 "DISTRIBUIDA EU → AM (2PC) no novo primário"
+expect 201 "LOCAL EU → EU servida pela cópia"
+TX_DURING=$(echo "$LAST_BODY" | jq -r .tx_id)
+transfer GS-EU-00000001 GS-AM-00000002 1.00 "demo08c-$(date +%s%N)"
+expect 201 "DISTRIBUIDA EU → AM (2PC) com a Europa servida pela cópia"
+with_user operador@globalscale.test "$STAFF_PASSWORD" POST /accounts/GS-EU-00000003/deposit '{"amount":"5.00"}'
+expect 200 "depósito numa conta da Europa"
+with_user operador@globalscale.test "$STAFF_PASSWORD" POST /accounts/GS-EU-00000003/withdraw '{"amount":"5.00"}'
+expect 200 "levantamento numa conta da Europa"
 api GET /health
-info "a api liga-se agora a: $(echo "$LAST_BODY" | jq -r .components.shard_EU.node) (pg-europa-replica = 172.28.0.62)"
+info "a api escreve agora em: $(echo "$LAST_BODY" | jq -r .components.shard_EU.node) (pg-america = 172.28.0.63)"
 pause
 
-step "5. O antigo primário volta e junta-se sozinho como réplica (sem split-brain)"
+step "4. pg-europa volta: sincroniza-se a partir da cópia e retoma o seu papel sozinho"
 cmd "docker start pg-europa"; docker start pg-europa >/dev/null
-for _ in $(seq 1 60); do
-  [[ "$(docker exec pg-europa psql -U postgres -tAc 'select pg_is_in_recovery()' 2>/dev/null)" == t ]] && break; sleep 2
-done
-docker logs pg-europa 2>&1 | grep pg-entrypoint | tail -3 | sed 's/^/    /'
-show_db_roles
+wait_all_home || fail "a topologia não voltou ao normal"
+docker logs pg-europa 2>&1 | grep -E "supervisor pg-europa/EU" | grep -E "primário mais recente|PROMOÇÃO|a copiar" | tail -3 | sed 's/^/    /'
+docker logs pg-america 2>&1 | grep -E "supervisor pg-america/EU" | grep RETOMA | tail -1 | sed 's/^/    /'
+topology
+ok "pg-europa é de novo o primário da Europa e pg-america:5433 voltou a ser a sua cópia"
+info "a transferência feita durante a falha está no pg-europa:"
+sql "host=pg-europa.global.local port=5432 dbname=bank" "SELECT iban, type, amount FROM movements WHERE tx_id = '$TX_DURING' ORDER BY type"
+decimal_true "D('$B_BEFORE') - 2 == D('$(balance GS-EU-00000001)')" && ok "saldo de GS-EU-00000001: −2.00 EUR (as duas transferências feitas na falha), sem perdas nem duplicados" || fail "saldo errado"
 check_consistency
-pause
-
-step "6. Repor a topologia original (failback)"
-docker stop pg-europa-replica >/dev/null
-./scripts/failover.sh EU >/dev/null
-docker start pg-europa-replica >/dev/null
-for _ in $(seq 1 60); do
-  [[ "$(docker exec pg-europa-replica psql -U postgres -tAc 'select pg_is_in_recovery()' 2>/dev/null)" == t ]] && break; sleep 2
-done
-show_db_roles
-[[ "$(docker exec pg-europa psql -U postgres -tAc 'select pg_is_in_recovery()')" == f ]] && ok "pg-europa é de novo o primário" || fail "failback falhou"
 
 title "Cenário 08 concluído"

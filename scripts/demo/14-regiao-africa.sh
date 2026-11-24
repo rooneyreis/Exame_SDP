@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Scenario 14: the third region, África (AF, MZN), in a shard of its own (pg-africa + replica).
+# Scenario 14: the third region, África (AF, MZN), in a shard of its own (pg-africa, with its
+# copy on pg-europa).
 # Registration and KYC open a GS-AF account in MZN; local and 2PC transfers with EU and AM;
-# the África shard voting NO aborts the transfer; failover of the África shard and failback.
+# the África shard voting NO aborts the transfer; automatic takeover by the copy and return.
 source "$(dirname "$0")/lib.sh"
 
 title "Cenário 14 — Região África (AF, MZN)"
 
-step "1. Três regiões, três shards: cada um com primário e réplica"
-with_user admin@globalscale.test "$STAFF_PASSWORD" GET /admin/status
-echo "$LAST_BODY" | jq -r '.databases | to_entries[] | "    \(.key | .+ "                    " | .[0:20]) \(if .value.up then .value.role else "EM BAIXO" end)  ssl=\(.value.ssl // "-")"'
-[[ "$(echo "$LAST_BODY" | jq -r '.databases["pg-africa"].role')" == "primário" ]] && ok "pg-africa é primário" || fail "pg-africa não está como primário"
-[[ "$(echo "$LAST_BODY" | jq -r '.databases["pg-africa-replica"].role')" == "réplica" ]] && ok "pg-africa-replica é réplica em streaming" || fail "pg-africa-replica não está como réplica"
+step "1. Três regiões, três shards: cada um no seu nó, com a cópia no nó seguinte do anel"
+topology
+[[ "$(db_role pg-africa 5432)" == f ]] && ok "pg-africa é o primário de África" || fail "pg-africa não é o primário"
+[[ "$(db_role pg-europa 5433)" == t ]] && ok "a cópia de África está em pg-europa:5433, a receber em streaming" || fail "a cópia de África não está a seguir"
 pause
 
 step "2. Registo de uma cliente em África → KYC → conta GS-AF em MZN no shard África"
@@ -24,9 +24,9 @@ expect 200 "KYC aprovado pelo operador"
 show '.account | {iban, currency, region}'
 NEW_IBAN=$(echo "$LAST_BODY" | jq -r .account.iban)
 [[ "$NEW_IBAN" == GS-AF-* && "$(echo "$LAST_BODY" | jq -r .account.currency)" == MZN ]] && ok "conta $NEW_IBAN aberta em MZN" || fail "conta errada"
-sql "host=pg-africa.global.local,pg-africa-replica.global.local target_session_attrs=read-write dbname=bank" \
+sql "host=pg-africa.global.local,pg-europa.global.local port=5432,5433 target_session_attrs=read-write dbname=bank" \
     "SELECT iban, currency, balance, inet_server_addr() AS no FROM accounts WHERE iban = '$NEW_IBAN'"
-sql "host=pg-europa.global.local,pg-europa-replica.global.local target_session_attrs=read-write dbname=bank" \
+sql "host=pg-europa.global.local,pg-america.global.local port=5432,5433 target_session_attrs=read-write dbname=bank" \
     "SELECT count(*) AS contas_af_na_europa FROM accounts WHERE iban LIKE 'GS-AF-%'"
 pause
 
@@ -74,30 +74,20 @@ A_FROM=$(balance GS-EU-00000001)
 prepared_xacts
 pause
 
-step "7. Failover do shard África"
+step "7. O nó pg-africa cai: a cópia em pg-europa assume o papel de África sozinha"
 cmd "docker stop pg-africa"; docker stop pg-africa >/dev/null
-ok "primário de África parado"
-cmd "./scripts/failover.sh AF"; ./scripts/failover.sh AF | sed 's/^/    /'
+SECS=$(wait_role pg-europa 5433 f 40) || fail "a cópia de África não assumiu o papel"
+ok "pg-europa:5433 é agora o primário de África (assumiu em ${SECS}s, sem nenhum comando)"
 login amina.mussa@cliente.test "$CLIENT_PASSWORD"
 transfer GS-AF-00000001 GS-AF-00000003 200.00 "demo14-failover-$N"
-expect 201 "transferência AF → AF servida pelo novo primário (pg-africa-replica), sem mudar configuração"
-cmd "docker start pg-africa"; docker start pg-africa >/dev/null
-for _ in $(seq 1 60); do
-  [[ "$(docker exec pg-africa psql -U postgres -tAc 'SELECT pg_is_in_recovery()' 2>/dev/null)" == t ]] && break; sleep 2
-done
-[[ "$(docker exec pg-africa psql -U postgres -tAc 'SELECT pg_is_in_recovery()')" == t ]] && ok "pg-africa voltou sozinho como RÉPLICA (sem split-brain)" || fail "pg-africa não voltou como réplica"
+expect 201 "transferência AF → AF servida pela cópia, sem mudar configuração"
 pause
 
-step "8. Failback: repor a topologia original"
-cmd "docker stop pg-africa-replica && ./scripts/failover.sh AF && docker start pg-africa-replica"
-docker stop pg-africa-replica >/dev/null
-./scripts/failover.sh AF | grep -E 'OK|ERRO' | sed 's/^/    /'
-docker start pg-africa-replica >/dev/null
-for _ in $(seq 1 60); do
-  [[ "$(docker exec pg-africa psql -U postgres -tAc "SELECT count(*) FROM pg_stat_replication WHERE state='streaming'" 2>/dev/null)" == 1 ]] && break; sleep 2
-done
-[[ "$(docker exec pg-africa psql -U postgres -tAc 'SELECT pg_is_in_recovery()')" == f ]] && ok "pg-africa é de novo o primário e pg-africa-replica a réplica" || fail "failback falhou"
-wait_healthy pg-africa-replica
+step "8. pg-africa volta: sincroniza-se a partir da cópia e retoma o seu papel"
+cmd "docker start pg-africa"; docker start pg-africa >/dev/null
+wait_all_home || fail "a topologia não voltou ao normal"
+topology
+ok "pg-africa é de novo o primário de África e pg-europa:5433 voltou a ser a sua cópia"
 pause
 
 step "9. Verificação final nos três shards"

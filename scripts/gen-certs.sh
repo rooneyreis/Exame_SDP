@@ -19,11 +19,8 @@ SERVICES=(
   "nfs:172.28.0.50"
   "pg-core:172.28.0.60"
   "pg-europa:172.28.0.61"
-  "pg-europa-replica:172.28.0.62"
   "pg-america:172.28.0.63"
-  "pg-america-replica:172.28.0.64"
   "pg-africa:172.28.0.65"
-  "pg-africa-replica:172.28.0.66"
 )
 
 FORCE=0

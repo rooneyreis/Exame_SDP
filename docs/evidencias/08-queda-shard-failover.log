@@ -1,66 +1,66 @@
 
-══════ Cenário 08 — Queda do primário de um shard e failover ══════
-(2026-11-23T22:07:09Z)
+══════ Cenário 08 — Um nó cai e a cópia noutro nó assume o seu papel ══════
+(2026-11-24T08:38:11Z)
 
-▶ 1. Situação inicial
-    pg-europa: primário (réplicas a receber: 1)
-    pg-europa-replica: réplica (réplicas a receber: 0)
+▶ 1. Situação inicial: cada base no seu nó, com a cópia no nó seguinte do anel
+    BASE   DONO                                CÓPIA                             
+    CORE   pg-core:5432           primário    pg-america:5434        cópia      
+    EU     pg-europa:5432         primário    pg-america:5433        cópia      
+    AM     pg-america:5432        primário    pg-africa:5433         cópia      
+    AF     pg-africa:5432         primário    pg-europa:5433         cópia      
   POST /auth/login -> HTTP 200
-  POST /transfers -> HTTP 201 (X-Served-By: api-1)
-  ✔ transferência EU → EU funciona (HTTP 201)
-
-▶ 2. Derrubar o primário pg-europa
-  $ docker stop pg-europa
-    pg-europa: EM BAIXO
-    pg-europa-replica: réplica (réplicas a receber: 0)
-  POST /transfers -> HTTP 202 (X-Served-By: api-1)
-  durante a falha: HTTP 202 — nó EU indisponível (OperationalError): será concluída quando o nó voltar
-  ✔ sem primário na Europa não há escritas (a réplica só aceita leituras)
-  GET /accounts -> HTTP 200 (X-Served-By: api-2)
-  ✔ leituras continuam a funcionar a partir da réplica (target_session_attrs=any) (HTTP 200)
-    [
-      {
-        "iban": "GS-EU-00000001",
-        "balance": "9658.69"
-      }
-    ]
-
-▶ 3. Failover: promover a réplica
-  $ ./scripts/failover.sh EU
-    [failover] pg-europa: em baixo
-    [failover] pg-europa-replica: réplica
-    [failover] A promover pg-europa-replica com pg_promote()...
-    [failover] OK: pg-europa-replica é agora o PRIMÁRIO da região EU.
-    [failover] As transações preparadas que estavam no WAL continuam lá:
-    0 preparada(s) pendente(s)
-    [failover] Quando o nó antigo voltar (docker start), junta-se automaticamente como réplica.
-    pg-europa: EM BAIXO
-    pg-europa-replica: primário (réplicas a receber: 0)
-
-▶ 4. As transferências voltam a funcionar, sem mudar configuração nenhuma
-  (os serviços ligam-se com host=pg-europa…,pg-europa-replica… target_session_attrs=read-write)
   POST /transfers -> HTTP 201 (X-Served-By: api-2)
-  ✔ LOCAL EU → EU no novo primário (HTTP 201)
-  POST /transfers -> HTTP 201 (X-Served-By: api-1)
-  ✔ DISTRIBUIDA EU → AM (2PC) no novo primário (HTTP 201)
-  GET /health -> HTTP 200 (X-Served-By: api-2)
-  a api liga-se agora a: 172.28.0.62 (pg-europa-replica = 172.28.0.62)
+  ✔ transferência EU → EU no pg-europa (HTTP 201)
 
-▶ 5. O antigo primário volta e junta-se sozinho como réplica (sem split-brain)
+▶ 2. Derrubar o nó pg-europa (sem mais nenhum comando)
+  $ docker stop pg-europa
+  ✔ pg-europa parado: a base da Europa (e a cópia de África que ele guardava) ficaram em baixo
+  o supervisor do pg-america vê que o dono desapareceu e promove a cópia...
+  ✔ a cópia da Europa em pg-america:5433 é agora o PRIMÁRIO (assumiu em 8s)
+    [supervisor pg-america/EU] PROMOÇÃO: pg-europa não está disponível como primário; pg-america assume o papel de EU
+    BASE   DONO                                CÓPIA                             
+    CORE   pg-core:5432           primário    pg-america:5434        cópia      
+    EU     pg-europa:5432         em baixo     pg-america:5433        primário   
+    AM     pg-america:5432        primário    pg-africa:5433         cópia      
+    AF     pg-africa:5432         primário    pg-europa:5433         em baixo    
+
+▶ 3. A Europa continua a aceitar operações, sem mudar configuração nenhuma
+  (os serviços ligam-se com host=pg-europa,pg-america port=5432,5433 target_session_attrs=read-write)
+  POST /transfers -> HTTP 201 (X-Served-By: api-2)
+  ✔ LOCAL EU → EU servida pela cópia (HTTP 201)
+  POST /transfers -> HTTP 201 (X-Served-By: api-1)
+  ✔ DISTRIBUIDA EU → AM (2PC) com a Europa servida pela cópia (HTTP 201)
+  POST /accounts/GS-EU-00000003/deposit -> HTTP 200 (X-Served-By: api-2)
+  ✔ depósito numa conta da Europa (HTTP 200)
+  POST /accounts/GS-EU-00000003/withdraw -> HTTP 200 (X-Served-By: api-1)
+  ✔ levantamento numa conta da Europa (HTTP 200)
+  GET /health -> HTTP 200 (X-Served-By: api-2)
+  a api escreve agora em: 172.28.0.63 (pg-america = 172.28.0.63)
+
+▶ 4. pg-europa volta: sincroniza-se a partir da cópia e retoma o seu papel sozinho
   $ docker start pg-europa
-    [pg-entrypoint:pg-europa] AVISO: pg-europa-replica.global.local já é primário (houve failover). Este nó volta como réplica.
-    [pg-entrypoint:pg-europa] a clonar dados de pg-europa-replica.global.local com pg_basebackup (TLS verify-full)...
-    [pg-entrypoint:pg-europa] clone concluído: este nó arranca como RÉPLICA (standby) de pg-europa-replica.global.local
-    pg-europa: réplica (réplicas a receber: 0)
-    pg-europa-replica: primário (réplicas a receber: 1)
+    [supervisor pg-europa/EU] pg-america é o primário mais recente: esta base passa a cópia dele
+    [supervisor pg-europa/EU] a copiar a base de pg-america:5433 (pg_basebackup)
+    [supervisor pg-europa/EU] PROMOÇÃO: pg-america não está disponível como primário; pg-europa assume o papel de EU
+    [supervisor pg-america/EU] RETOMA: pg-europa voltou e está sincronizado; devolve-lhe o papel de EU
+    BASE   DONO                                CÓPIA                             
+    CORE   pg-core:5432           primário    pg-america:5434        cópia      
+    EU     pg-europa:5432         primário    pg-america:5433        cópia      
+    AM     pg-america:5432        primário    pg-africa:5433         cópia      
+    AF     pg-africa:5432         primário    pg-europa:5433         cópia      
+  ✔ pg-europa é de novo o primário da Europa e pg-america:5433 voltou a ser a sua cópia
+  a transferência feita durante a falha está no pg-europa:
+  $ psql "host=pg-europa.global.local port=5432 dbname=bank" -c "SELECT iban, type, amount FROM movements WHERE tx_id = '8b20d147-7568-5e3e-b866-0ebf5c951fa5' ORDER BY type"
+          iban      |  type   | amount 
+    ----------------+---------+--------
+     GS-EU-00000002 | CREDITO |   1.00
+     GS-EU-00000001 | DEBITO  |   1.00
+    (2 rows)
+    
+  ✔ saldo de GS-EU-00000001: −2.00 EUR (as duas transferências feitas na falha), sem perdas nem duplicados
   GET /admin/consistency -> HTTP 200 (X-Served-By: api-2)
-    {"ok":true,"checked_transactions":61,"confirmed":45,"aborted":16,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[],"AF":[]},"problems":[]}
+    {"ok":true,"checked_transactions":226,"confirmed":198,"aborted":28,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[],"AF":[]},"problems":[]}
   ✔ /admin/consistency OK: sem dinheiro perdido nem duplicado
 
-▶ 6. Repor a topologia original (failback)
-    pg-europa: primário (réplicas a receber: 1)
-    pg-europa-replica: réplica (réplicas a receber: 0)
-  ✔ pg-europa é de novo o primário
-
 ══════ Cenário 08 concluído ══════
-(2026-11-23T22:07:38Z)
+(2026-11-24T08:38:40Z)

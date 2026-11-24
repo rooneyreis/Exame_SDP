@@ -1,14 +1,14 @@
 
 ══════ Cenário 03 — Transferência distribuída com 2PC (EU/EUR → AM/USD) ══════
-(2026-11-23T22:06:33Z)
-  saldos antes: GS-EU-00000001=9759.69 EUR (pg-europa)   GS-AM-00000001=10075.60 USD (pg-america)
+(2026-11-24T08:37:33Z)
+  saldos antes: GS-EU-00000001=8798.90 EUR (pg-europa)   GS-AM-00000001=10662.74 USD (pg-america)
 
 ▶ 1. Ana (EU) transfere 100.00 EUR para o David (AM)
   POST /auth/login -> HTTP 200
   POST /transfers -> HTTP 201 (X-Served-By: api-2)
   ✔ transferência confirmada (HTTP 201)
     {
-      "tx_id": "ac0fbde0-654b-570f-be9e-db269a43a73c",
+      "tx_id": "44964468-c163-50c2-ad46-5a9bd4cc187b",
       "kind": "DISTRIBUIDA",
       "state": "CONFIRMADA",
       "amount": "100.00",
@@ -19,14 +19,14 @@
     }
 
 ▶ 2. Linha temporal do 2PC (tabela tx_events no log do coordenador)
-    22:06:33.782  INICIADA   {"kind":"DISTRIBUIDA","amount":"100.00","signer":"api-2","fx_rate":"1.08000000","converted":"108.00","approved_by":null,"to_currency":"USD","initiated_by":"11111111-0000-4000-8000-000000000001","from_currency":"EUR","initiated_role":"cliente"}
-    22:06:33.789  PREPARANDO
-    22:06:33.809  PREPARADO_EU   {"iban":"GS-EU-00000001","side":"DEBITO"}
-    22:06:33.828  PREPARADO_AM   {"iban":"GS-AM-00000001","side":"CREDITO"}
-    22:06:33.833  DECISAO_COMMIT
-    22:06:33.837  COMMIT_EU
-    22:06:33.841  COMMIT_AM
-    22:06:33.845  CONFIRMADA
+    08:37:33.625  INICIADA   {"kind":"DISTRIBUIDA","amount":"100.00","signer":"api-2","fx_rate":"1.08000000","converted":"108.00","approved_by":null,"to_currency":"USD","initiated_by":"11111111-0000-4000-8000-000000000001","from_currency":"EUR","initiated_role":"cliente"}
+    08:37:33.697  PREPARANDO
+    08:37:33.722  PREPARADO_EU   {"iban":"GS-EU-00000001","side":"DEBITO"}
+    08:37:33.744  PREPARADO_AM   {"iban":"GS-AM-00000001","side":"CREDITO"}
+    08:37:33.753  DECISAO_COMMIT
+    08:37:33.760  COMMIT_EU
+    08:37:33.766  COMMIT_AM
+    08:37:33.774  CONFIRMADA
   
   Fase 1: cada shard faz BEGIN … UPDATE … PREPARE TRANSACTION e vota SIM (PREPARADO_*)
   Ponto de decisão: DECISAO_COMMIT gravada (commit) no pg-core ANTES de qualquer COMMIT PREPARED
@@ -34,17 +34,17 @@
 
 ▶ 3. Os movimentos, vistos diretamente em cada Postgres
   pg-europa (débito em EUR):
-  $ psql "host=pg-europa.global.local,pg-europa-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT iban, type, amount, currency, balance_after FROM movements WHERE tx_id = 'ac0fbde0-654b-570f-be9e-db269a43a73c'"
+  $ psql "host=pg-europa.global.local,pg-america.global.local port=5432,5433 target_session_attrs=read-write dbname=bank" -c "SELECT iban, type, amount, currency, balance_after FROM movements WHERE tx_id = '44964468-c163-50c2-ad46-5a9bd4cc187b'"
           iban      |  type  | amount | currency | balance_after 
     ----------------+--------+--------+----------+---------------
-     GS-EU-00000001 | DEBITO | 100.00 | EUR      |       9659.69
+     GS-EU-00000001 | DEBITO | 100.00 | EUR      |       8698.90
     (1 row)
     
   pg-america (crédito em USD, já convertido):
-  $ psql "host=pg-america.global.local,pg-america-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT iban, type, amount, currency, balance_after FROM movements WHERE tx_id = 'ac0fbde0-654b-570f-be9e-db269a43a73c'"
+  $ psql "host=pg-america.global.local,pg-africa.global.local port=5432,5433 target_session_attrs=read-write dbname=bank" -c "SELECT iban, type, amount, currency, balance_after FROM movements WHERE tx_id = '44964468-c163-50c2-ad46-5a9bd4cc187b'"
           iban      |  type   | amount | currency | balance_after 
     ----------------+---------+--------+----------+---------------
-     GS-AM-00000001 | CREDITO | 108.00 | USD      |      10183.60
+     GS-AM-00000001 | CREDITO | 108.00 | USD      |      10770.74
     (1 row)
     
   nenhuma transação ficou preparada (pendurada):
@@ -53,30 +53,30 @@
   pg-africa: nenhuma
 
 ▶ 4. Saldos depois
-  GS-EU-00000001: 9759.69 → 9659.69 EUR    GS-AM-00000001: 10075.60 → 10183.60 USD
+  GS-EU-00000001: 8798.90 → 8698.90 EUR    GS-AM-00000001: 10662.74 → 10770.74 USD
   ✔ −100.00 EUR / +108.00 USD (taxa 1.08)
   GET /admin/consistency -> HTTP 200 (X-Served-By: api-1)
-    {"ok":true,"checked_transactions":56,"confirmed":40,"aborted":16,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[],"AF":[]},"problems":[]}
+    {"ok":true,"checked_transactions":222,"confirmed":194,"aborted":28,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[],"AF":[]},"problems":[]}
   ✔ /admin/consistency OK: sem dinheiro perdido nem duplicado
 
 ▶ 5. Liquidação assíncrona no banco parceiro (legado Java, XML assinado com Ed25519)
   settlement_status: ACEITE
-    LIQUIDACAO_ACEITE  {"http":200,"reason":"registada no ledger","bank_timestamp":"2026-11-23T22:06:33Z"}
+    LIQUIDACAO_ACEITE  {"http":200,"reason":"registada no ledger","bank_timestamp":"2026-11-24T08:37:33Z"}
   ✔ o legado validou SHA-256 + assinatura e respondeu com um ack assinado
   log do legado:
-    2026-11-23T22:06:33Z [legacy-bank] ordem ac0fbde0-654b-570f-be9e-db269a43a73c ACEITE 100.00 EUR -> 108.00 USD
+    2026-11-24T08:37:33Z [legacy-bank] ordem 44964468-c163-50c2-ad46-5a9bd4cc187b ACEITE 100.00 EUR -> 108.00 USD
   registo de largura fixa no ledger do mainframe (/data/ledger.dat, 121 colunas):
-    ac0fbde0-654b-570f-be9e-db269a43a73cGS-EU-00000001GS-AM-00000001000000000010000EUR000000000010800USD2026-11-23T22:06:33ZA
+    44964468-c163-50c2-ad46-5a9bd4cc187bGS-EU-00000001GS-AM-00000001000000000010000EUR000000000010800USD2026-11-24T08:37:33ZA
       └─TxId(36)─────────────────────────┘└From(14)────┘└To(14)──────┘└Amount(15)───┘Cur└Converted(15)┘Cur└Timestamp(20)──────┘S
   ordem em XML (GET /settlements do legado):
     <Settlement>
-        <TxId>ac0fbde0-654b-570f-be9e-db269a43a73c</TxId>
+        <TxId>44964468-c163-50c2-ad46-5a9bd4cc187b</TxId>
         <FromIban>GS-EU-00000001</FromIban>
         <ToIban>GS-AM-00000001</ToIban>
         <Amount currency="EUR">100.00</Amount>
         <ConvertedAmount currency="USD">108.00</ConvertedAmount>
-        <Timestamp>2026-11-23T22:06:33Z</Timestamp>
+        <Timestamp>2026-11-24T08:37:33Z</Timestamp>
       </Settlement>
 
 ══════ Cenário 03 concluído ══════
-(2026-11-23T22:06:37Z)
+(2026-11-24T08:37:37Z)

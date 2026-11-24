@@ -150,3 +150,31 @@ wait_tx_state() {  # wait_tx_state TX_ID STATE TIMEOUT
   done
   return 1
 }
+
+# --- ring of copies (common/topology.json) ------------------------------------------
+
+topology() {  # prints where each database is and which location is the primary
+  ./scripts/topologia.sh | sed 's/^/    /'
+}
+
+db_role() {  # db_role NODE PORT -> f (primary) | t (copy/standby) | "" (down)
+  docker exec "$1" psql -U postgres -p "$2" -tAc "SELECT pg_is_in_recovery()" 2>/dev/null || true
+}
+
+wait_role() {  # wait_role NODE PORT f|t TIMEOUT -> prints the seconds it took
+  local t0=$(date +%s)
+  for _ in $(seq 1 "$4"); do
+    [[ "$(db_role "$1" "$2")" == "$3" ]] && { echo $(( $(date +%s) - t0 )); return 0; }
+    sleep 1
+  done
+  return 1
+}
+
+wait_all_home() {  # every database back on its owner node, every copy following it
+  for _ in $(seq 1 90); do
+    [[ "$(db_role pg-core 5432)$(db_role pg-europa 5432)$(db_role pg-america 5432)$(db_role pg-africa 5432)" == ffff &&
+       "$(db_role pg-america 5434)$(db_role pg-america 5433)$(db_role pg-africa 5433)$(db_role pg-europa 5433)" == tttt ]] && return 0
+    sleep 2
+  done
+  return 1
+}

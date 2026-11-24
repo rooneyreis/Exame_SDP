@@ -20,7 +20,7 @@ done
 pause
 
 step "2. Só existe UM débito no shard"
-sql "host=pg-america.global.local,pg-america-replica.global.local target_session_attrs=read-write dbname=bank" \
+sql "host=pg-america.global.local,pg-africa.global.local port=5432,5433 target_session_attrs=read-write dbname=bank" \
   "SELECT count(*) AS debitos FROM movements WHERE tx_id = '${IDS[0]}' AND type = 'DEBITO'"
 A_FROM=$(balance $FROM)
 info "saldo $FROM: $B_FROM → $A_FROM USD"

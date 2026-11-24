@@ -1,6 +1,6 @@
 
 ══════ Cenário 00 — Ambiente de rede e SO: IPs, portas, DNS local e conectividade ══════
-(2026-11-23T22:06:20Z)
+(2026-11-24T08:37:18Z)
 
 ▶ 1. Nós Linux: sistema operativo e kernel de cada contentor
     nginx                Alpine Linux v3.21                     Linux 6.18.58.1-microsoft-standard-WSL2
@@ -12,11 +12,8 @@
     nfs                  Ubuntu 24.04.5 LTS                     Linux 6.18.58.1-microsoft-standard-WSL2
     pg-core              Debian GNU/Linux 13 (trixie)           Linux 6.18.58.1-microsoft-standard-WSL2
     pg-europa            Debian GNU/Linux 13 (trixie)           Linux 6.18.58.1-microsoft-standard-WSL2
-    pg-europa-replica    Debian GNU/Linux 13 (trixie)           Linux 6.18.58.1-microsoft-standard-WSL2
     pg-america           Debian GNU/Linux 13 (trixie)           Linux 6.18.58.1-microsoft-standard-WSL2
-    pg-america-replica   Debian GNU/Linux 13 (trixie)           Linux 6.18.58.1-microsoft-standard-WSL2
     pg-africa            Debian GNU/Linux 13 (trixie)           Linux 6.18.58.1-microsoft-standard-WSL2
-    pg-africa-replica    Debian GNU/Linux 13 (trixie)           Linux 6.18.58.1-microsoft-standard-WSL2
   ✔ todos os nós são Linux (imagens Debian/Ubuntu/Alpine sobre o mesmo kernel)
 
 ▶ 2. Rede globalnet: subnet e IP fixo de cada nó
@@ -31,11 +28,8 @@
     nfs                  172.28.0.50    porta 2049
     pg-core              172.28.0.60    porta 5432
     pg-europa            172.28.0.61    porta 5432
-    pg-europa-replica    172.28.0.62    porta 5432
     pg-america           172.28.0.63    porta 5432
-    pg-america-replica   172.28.0.64    porta 5432
     pg-africa            172.28.0.65    porta 5432
-    pg-africa-replica    172.28.0.66    porta 5432
 
 ▶ 3. DNS local: cada nó resolve os nomes *.global.local dos outros (resolvido a partir da api-1)
   $ docker exec api-1 getent hosts <nó>.global.local
@@ -48,11 +42,8 @@
     nfs.global.local                 → 172.28.0.50
     pg-core.global.local             → 172.28.0.60
     pg-europa.global.local           → 172.28.0.61
-    pg-europa-replica.global.local   → 172.28.0.62
     pg-america.global.local          → 172.28.0.63
-    pg-america-replica.global.local  → 172.28.0.64
     pg-africa.global.local           → 172.28.0.65
-    pg-africa-replica.global.local   → 172.28.0.66
   ✔ todos os nomes resolvem pelo DNS interno do Docker (127.0.0.11)
     nameserver 127.0.0.11
 
@@ -66,11 +57,12 @@
     api-1        -> nfs.global.local                 172.28.0.50:2049  ligado
     api-1        -> pg-core.global.local             172.28.0.60:5432  ligado
     api-1        -> pg-europa.global.local           172.28.0.61:5432  ligado
-    api-1        -> pg-europa-replica.global.local   172.28.0.62:5432  ligado
     api-1        -> pg-america.global.local          172.28.0.63:5432  ligado
-    api-1        -> pg-america-replica.global.local  172.28.0.64:5432  ligado
     api-1        -> pg-africa.global.local           172.28.0.65:5432  ligado
-    api-1        -> pg-africa-replica.global.local   172.28.0.66:5432  ligado
+    api-1        -> pg-europa.global.local           172.28.0.61:5433  ligado
+    api-1        -> pg-america.global.local          172.28.0.63:5433  ligado
+    api-1        -> pg-america.global.local          172.28.0.63:5434  ligado
+    api-1        -> pg-africa.global.local           172.28.0.65:5433  ligado
     coordinator  -> nginx.global.local               172.28.0.10:443  ligado
     coordinator  -> api-1.global.local               172.28.0.11:8000  ligado
     coordinator  -> api-2.global.local               172.28.0.12:8000  ligado
@@ -80,11 +72,12 @@
     coordinator  -> nfs.global.local                 172.28.0.50:2049  ligado
     coordinator  -> pg-core.global.local             172.28.0.60:5432  ligado
     coordinator  -> pg-europa.global.local           172.28.0.61:5432  ligado
-    coordinator  -> pg-europa-replica.global.local   172.28.0.62:5432  ligado
     coordinator  -> pg-america.global.local          172.28.0.63:5432  ligado
-    coordinator  -> pg-america-replica.global.local  172.28.0.64:5432  ligado
     coordinator  -> pg-africa.global.local           172.28.0.65:5432  ligado
-    coordinator  -> pg-africa-replica.global.local   172.28.0.66:5432  ligado
+    coordinator  -> pg-europa.global.local           172.28.0.61:5433  ligado
+    coordinator  -> pg-america.global.local          172.28.0.63:5433  ligado
+    coordinator  -> pg-america.global.local          172.28.0.63:5434  ligado
+    coordinator  -> pg-africa.global.local           172.28.0.65:5433  ligado
   ✔ todos os nós comunicam entre si
 
 ▶ 5. Do exterior só a porta 443 (nginx) está publicada
@@ -93,4 +86,4 @@ nginx	0.0.0.0:443->443/tcp, [::]:443->443/tcp
   ✔ https://localhost/health responde (via nginx) (HTTP 200)
 
 ══════ Cenário 00 concluído ══════
-(2026-11-23T22:06:25Z)
+(2026-11-24T08:37:22Z)

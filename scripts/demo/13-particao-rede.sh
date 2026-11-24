@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Scenario 13: NETWORK failure (the node keeps running, but is unreachable):
+# Scenario 13: NETWORK failure (pg-america keeps running, but nobody can reach it):
+#   - pg-america sees no other node: it fences itself (read-only), never a second primary;
+#   - the copy of America on pg-africa takes over its role.
 #   A) partition AFTER both shards prepared -> decision COMMIT is durable -> the recovery
-#      loop finishes it when the network comes back (money is not lost).
-#   B) partition BEFORE America prepares    -> America cannot answer -> PENDENTE (Europa rolled back), then completed when the network is back; Europa is
-#      rolled back (money never leaves the account).
+#      loop commits on the copy (the prepared transaction is there): money is not lost.
+#   B) partition BEFORE America prepares -> America does not answer -> PENDENTE (Europa
+#      rolled back, money never leaves) -> completed on the copy once it took over.
+# When the network comes back, pg-america re-syncs from the copy and takes its role back.
 source "$(dirname "$0")/lib.sh"
 
 NET=gss_globalnet
@@ -33,15 +36,21 @@ LAST_STATUS=$(tail -1 "$OUT"); LAST_BODY=$(head -n -1 "$OUT")
 TX=$(echo "$LAST_BODY" | jq -r .tx_id)
 info "resposta: HTTP $LAST_STATUS  state=$(echo "$LAST_BODY" | jq -r .state)"
 timeline
-[[ "$(echo "$LAST_BODY" | jq -r .state)" == DECISAO_COMMIT ]] && ok "decisão gravada; COMMIT na América pendente" || fail "esperava DECISAO_COMMIT"
-info "durante a partição a América continua a ter a transação preparada:"
-docker exec pg-america psql -U postgres -d bank -tAc "SELECT gid FROM pg_prepared_xacts" | sed 's/^/    /'
+state=$(echo "$LAST_BODY" | jq -r .state)
+[[ "$state" == DECISAO_COMMIT || "$state" == CONFIRMADA ]] && ok "decisão COMMIT gravada" || fail "esperava DECISAO_COMMIT"
+info "pg-america isolado: não vê nenhum outro nó, por isso fica só de leitura (nunca dois primários):"
+docker logs pg-america 2>&1 | grep -E "supervisor pg-america/AM.*ISOLADO" | tail -1 | sed 's/^/    /'
+SECS=$(wait_role pg-africa 5433 f 40) || fail "a cópia da América não assumiu o papel"
+ok "a cópia da América (pg-africa:5433) assumiu o papel"
 pause
 
-step "A2. Repor a rede → o recovery loop conclui"
-restore_network
+step "A2. O recovery loop conclui o COMMIT na cópia, ainda com a rede cortada"
 wait_tx_state "$TX" CONFIRMADA 60 || fail "não concluiu"
 timeline
+restore_network
+info "rede reposta: pg-america sincroniza-se a partir da cópia e retoma o seu papel..."
+wait_all_home || fail "a topologia não voltou ao normal"
+topology
 A_FROM=$(balance $FROM); A_TO=$(balance $TO)
 info "$FROM: $B_FROM → $A_FROM EUR    $TO: $B_TO → $A_TO USD"
 decimal_true "D('$B_FROM') - 30 == D('$A_FROM') and D('$B_TO') + D('32.40') == D('$A_TO')" && ok "−30.00 EUR / +32.40 USD: o dinheiro saiu e entrou" || fail "saldos errados"
@@ -61,26 +70,30 @@ cut_network
 wait $CURL_PID
 LAST_STATUS=$(tail -1 "$OUT"); LAST_BODY=$(head -n -1 "$OUT")
 info "resposta: HTTP $LAST_STATUS  state=$(echo "$LAST_BODY" | jq -r .state)"
-info "motivo: $(echo "$LAST_BODY" | jq -r .failure_reason)"
 timeline
-[[ "$(echo "$LAST_BODY" | jq -r .state)" == PENDENTE ]] && ok "a América não respondeu → PENDENTE (não abortada); a Europa fez ROLLBACK" || fail "esperava PENDENTE"
 TX=$(echo "$LAST_BODY" | jq -r .tx_id)
-A_FROM=$(balance $FROM)
-decimal_true "D('$B_FROM') == D('$A_FROM')" && ok "saldo de $FROM inalterado ($A_FROM EUR) enquanto está pendente: o dinheiro não saiu" || fail "dinheiro saiu!"
-restore_network
+case "$(echo "$LAST_BODY" | jq -r .state)" in
+  PENDENTE)
+    ok "a América ainda não respondia → PENDENTE (não abortada); a Europa fez ROLLBACK"
+    decimal_true "D('$B_FROM') == D('$(balance $FROM)')" && ok "saldo de $FROM inalterado enquanto está pendente: o dinheiro não saiu" || fail "dinheiro saiu!" ;;
+  CONFIRMADA) ok "a cópia da América já tinha assumido o papel: transferência concluída nela" ;;
+  *) fail "estado inesperado" ;;
+esac
 pause
 
-step "B2. A rede volta: o recovery loop retoma a transferência pendente e conclui-a"
+step "B2. A transferência é concluída na cópia da América, ainda com a rede cortada"
 login auditor@globalscale.test "$STAFF_PASSWORD"
 wait_tx_state "$TX" CONFIRMADA 90 || fail "a transferência pendente não foi concluída"
-ok "transferência retomada e CONFIRMADA quando o nó voltou"
+ok "CONFIRMADA na cópia (pg-africa:5433)"
 timeline
+restore_network
+wait_all_home || fail "a topologia não voltou ao normal"
 decimal_true "D('$B_FROM') - 40 == D('$(balance $FROM)')" && ok "−40.00 EUR debitados uma única vez" || fail "saldo errado"
 pause
 
-step "C. Verificação final"
+step "C. Verificação final: cada base de volta ao seu nó"
 chaos '{"off": true}'
-sleep 3
+topology
 prepared_xacts
 check_consistency
 

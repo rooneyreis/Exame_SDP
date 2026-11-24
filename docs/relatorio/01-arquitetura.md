@@ -18,9 +18,10 @@ flowchart TB
     CO -- 2PC --> PA[(pg-america<br/>172.28.0.63)]
     CO -- 2PC --> PF[(pg-africa<br/>172.28.0.65)]
     A1 & A2 --> PE & PA & PF
-    PE -- streaming WAL/TLS --> PER[(pg-europa-replica<br/>172.28.0.62)]
-    PA -- streaming WAL/TLS --> PAR[(pg-america-replica<br/>172.28.0.64)]
-    PF -- streaming WAL/TLS --> PFR[(pg-africa-replica<br/>172.28.0.66)]
+    PE -. cópia síncrona da Europa .-> PA
+    PA -. cópia síncrona da América .-> PF
+    PF -. cópia síncrona de África .-> PE
+    PC -. cópia síncrona do pg-core .-> PA
     NFS[[nfs NFS-Ganesha<br/>172.28.0.50<br/>/audit]]
     AU & A1 & A2 & CO -. NFS v4 .-> NFS
 ```
@@ -38,9 +39,11 @@ flowchart TB
 | legacy-bank | .40 | 9443 | Java 21 | mainframe do banco parceiro | ledger de largura fixa |
 | nfs | .50 | 2049 | NFS-Ganesha (v4) | DFS para auditoria e relatórios | `/audit` |
 | pg-core | .60 | 5432 | PostgreSQL 16 | BD `auth` e BD `coordinator` | utilizadores, log 2PC |
-| pg-europa (+réplica) | .61 (.62) | 5432 | PostgreSQL 16 | shard Europa | contas `GS-EU-*` |
-| pg-america (+réplica) | .63 (.64) | 5432 | PostgreSQL 16 | shard América | contas `GS-AM-*` |
-| pg-africa (+réplica) | .65 (.66) | 5432 | PostgreSQL 16 | shard África | contas `GS-AF-*`; custódia de outras regiões em baixo |
+| pg-europa | .61 | 5432 · 5433 | PostgreSQL 16 + supervisor | shard Europa; cópia de África | contas `GS-EU-*` |
+| pg-america | .63 | 5432 · 5433 · 5434 | PostgreSQL 16 + supervisor | shard América; cópias da Europa e do pg-core | contas `GS-AM-*` |
+| pg-africa | .65 | 5432 · 5433 | PostgreSQL 16 + supervisor | shard África; cópia da América | contas `GS-AF-*` |
+
+Cada base tem uma cópia síncrona noutro nó (anel definido em `common/topology.json`). Se o nó dono cair, a cópia assume o seu papel em segundos; quando ele volta, sincroniza-se e retoma-o. Todos os nós podem guardar valores em custódia para uma região totalmente em baixo.
 
 ## Rede
 

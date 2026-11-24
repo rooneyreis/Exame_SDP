@@ -1,6 +1,6 @@
 
 ══════ Cenário 16 — Sistema de ficheiros distribuído (NFS v4): auditoria e relatórios partilhados ══════
-(2026-11-23T22:09:44Z)
+(2026-11-24T08:41:30Z)
 
 ▶ 1. O export nfs:/audit está montado (NFS v4) em vários nós
     auth         /audit  ←  :/audit nfs4
@@ -10,12 +10,12 @@
   ✔ 4 nós veem o mesmo sistema de ficheiros, servido pelo nó nfs (172.28.0.50)
 
 ▶ 2. Escrever num nó e ler nos outros (transparência de localização)
-  $ docker exec api-1  → escreve /audit/demo-dfs/220944-api-1.txt
-    api-2        lê: escrito por api-1 às 22:09:44
-    coordinator  lê: escrito por api-1 às 22:09:44
-    auth         lê: escrito por api-1 às 22:09:44
+  $ docker exec api-1  → escreve /audit/demo-dfs/084130-api-1.txt
+    api-2        lê: escrito por api-1 às 08:41:30
+    coordinator  lê: escrito por api-1 às 08:41:30
+    auth         lê: escrito por api-1 às 08:41:30
   no disco do servidor NFS:
-    -rw-r--r-- 1 root root 31 Nov 23 22:09 /audit/demo-dfs/220944-api-1.txt
+    -rw-r--r-- 1 root root 31 Nov 24 08:41 /audit/demo-dfs/084130-api-1.txt
   ✔ o mesmo ficheiro é visível em todos os nós
 
 ▶ 3. Gerar atividade: um depósito (escreve no log de auditoria e no relatório partilhado)
@@ -23,53 +23,53 @@
   POST /accounts/GS-EU-00000002/deposit -> HTTP 200 (X-Served-By: api-2)
   ✔ depósito registado (HTTP 200)
   servido por api-2, que escreveu no NFS com lock exclusivo:
-    {"ts": "2026-11-23T22:09:45.444Z", "level": "INFO", "service": "api-2", "msg": "lock NFS adquirido em 2026-11-23.json (esperou 0.2 ms)", "request_id": "24a45429e2ec8262012e786559a3018e"}
-    {"ts": "2026-11-23T22:09:45.448Z", "level": "INFO", "service": "api-2", "msg": "lock NFS libertado em 2026-11-23.json", "request_id": "24a45429e2ec8262012e786559a3018e"}
+    {"ts": "2026-11-24T08:41:31.242Z", "level": "INFO", "service": "api-2", "msg": "lock NFS adquirido em 2026-11-24.json (esperou 0.3 ms)", "request_id": "839a176fa715700725194911d5b0f51e"}
+    {"ts": "2026-11-24T08:41:31.246Z", "level": "INFO", "service": "api-2", "msg": "lock NFS libertado em 2026-11-24.json", "request_id": "839a176fa715700725194911d5b0f51e"}
   (saldo reposto com um levantamento de 10.00)
 
 ▶ 4. Logs de auditoria: um ficheiro por nó, todos no mesmo diretório partilhado
-  $ ls -l /audit/2026-11-23/
-    total 312
-    -rw-r--r-- 1 root root  41612 Nov 23 22:09 api-1.log
-    -rw-r--r-- 1 root root  44431 Nov 23 22:09 api-2.log
-    -rw-r--r-- 1 root root  87880 Nov 23 22:09 auth.log
-    -rw-r--r-- 1 root root 121653 Nov 23 22:09 coordinator.log
+  $ ls -l /audit/2026-11-24/
+    total 340
+    -rw-r--r-- 1 root root  43753 Nov 24 08:41 api-1.log
+    -rw-r--r-- 1 root root  32590 Nov 24 08:41 api-2.log
+    -rw-r--r-- 1 root root  94543 Nov 24 08:41 auth.log
+    -rw-r--r-- 1 root root 154750 Nov 24 08:41 coordinator.log
   última linha do log da api, lida a partir do coordinator (outro nó):
-    {"ts":"2026-11-23T22:09:45.438Z","node":"api-2","event":"DEPOSITO","prev_hash":"71b698a17a7d2a7d…","hash":"efd1ab51bc939856…"}
+    {"ts":"2026-11-24T08:41:31.237Z","node":"api-2","event":"DEPOSITO","prev_hash":"93e46de5050d9c1a…","hash":"19503ab56ec898b3…"}
 
 ▶ 5. O auditor lê todos os logs do NFS e valida as cadeias de hashes SHA-256
   POST /auth/login -> HTTP 200
-  GET /admin/audit?date=2026-11-23 -> HTTP 200 (X-Served-By: api-2)
+  GET /admin/audit?date=2026-11-24 -> HTTP 200 (X-Served-By: api-2)
   ✔ auditoria lida do NFS (HTTP 200)
-    api-1.log: 95 linhas, íntegra=true
-    api-2.log: 103 linhas, íntegra=true
-    auth.log: 245 linhas, íntegra=true
-    coordinator.log: 240 linhas, íntegra=true
+    api-1.log: 103 linhas, íntegra=true
+    api-2.log: 76 linhas, íntegra=true
+    auth.log: 264 linhas, íntegra=true
+    coordinator.log: 306 linhas, íntegra=true
 
-▶ 6. Relatório diário partilhado /audit/reports/2026-11-23.json (atualizado pela api-1, api-2 e coordinator)
-  GET /admin/reports?date=2026-11-23 -> HTTP 200 (X-Served-By: api-1)
+▶ 6. Relatório diário partilhado /audit/reports/2026-11-24.json (atualizado pela api-1, api-2 e coordinator)
+  GET /admin/reports?date=2026-11-24 -> HTTP 200 (X-Served-By: api-1)
   ✔ relatório lido do NFS (HTTP 200)
     {
       "cash": {
         "DEPOSITO": {
           "AM": {
-            "count": 3,
+            "count": 2,
             "volume": {
-              "USD": "1001.00"
+              "USD": "501.00"
             }
           },
           "EU": {
             "count": 26,
             "volume": {
-              "EUR": "4120.70"
+              "EUR": "3120.70"
             }
           }
         },
         "LEVANTAMENTO": {
           "AF": {
-            "count": 5,
+            "count": 1,
             "volume": {
-              "MZN": "25.00"
+              "MZN": "5.00"
             }
           },
           "AM": {
@@ -79,43 +79,43 @@
             }
           },
           "EU": {
-            "count": 4,
+            "count": 5,
             "volume": {
               "EUR": "120.50"
             }
           }
         }
       },
-      "date": "2026-11-23",
-      "last_update": "2026-11-23T22:09:45Z",
+      "date": "2026-11-24",
+      "last_update": "2026-11-24T08:41:31Z",
       "transfers": {
         "by_kind": {
-          "DISTRIBUIDA": 58,
-          "LOCAL": 64
+          "DISTRIBUIDA": 83,
+          "LOCAL": 79
         },
         "by_state": {
-          "ABORTADA": 17,
-          "CONFIRMADA": 105
+          "ABORTADA": 11,
+          "CONFIRMADA": 151
         },
         "volume_by_region": {
           "AF": {
-            "MZN": "26055.00"
+            "MZN": "22130.00"
           },
           "AM": {
-            "USD": "256.54"
+            "USD": "383.08"
           },
           "EU": {
-            "EUR": "2162.05"
+            "EUR": "2808.76"
           }
         }
       },
       "updates_by_node": {
-        "api-1": 19,
-        "api-2": 20,
-        "coordinator": 122
+        "api-1": 18,
+        "api-2": 17,
+        "coordinator": 162
       }
     }
-    -rw-r--r-- 1 root root 1050 Nov 23 22:09 /audit/reports/2026-11-23.json
+    -rw-r--r-- 1 root root 1048 Nov 24 08:41 /audit/reports/2026-11-24.json
 
 ══════ Cenário 16 concluído ══════
-(2026-11-23T22:09:45Z)
+(2026-11-24T08:41:31Z)

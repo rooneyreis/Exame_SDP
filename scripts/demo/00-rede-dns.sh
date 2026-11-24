@@ -8,10 +8,10 @@ title "Cenário 00 — Ambiente de rede e SO: IPs, portas, DNS local e conectivi
 # name|port: every node of globalnet and the port of its service
 NODES=(
   "nginx|443" "api-1|8000" "api-2|8000" "auth|8010" "coordinator|8020"
-  "legacy-bank|9443" "nfs|2049" "pg-core|5432" "pg-europa|5432"
-  "pg-europa-replica|5432" "pg-america|5432" "pg-america-replica|5432"
-  "pg-africa|5432" "pg-africa-replica|5432"
+  "legacy-bank|9443" "nfs|2049" "pg-core|5432" "pg-europa|5432" "pg-america|5432" "pg-africa|5432"
 )
+# the copies kept by each node (ring): reachable on their own ports
+COPIES=("pg-europa|5433" "pg-america|5433" "pg-america|5434" "pg-africa|5433")
 
 step "1. Nós Linux: sistema operativo e kernel de cada contentor"
 for entry in "${NODES[@]}"; do
@@ -63,7 +63,7 @@ for entry in sys.argv[1:]:
 sys.exit(0 if ok else 1)
 '
 for src in api-1 coordinator; do
-  docker exec "$src" python -c "$CHECK" "${NODES[@]}" || fail "há nós inacessíveis a partir de $src"
+  docker exec "$src" python -c "$CHECK" "${NODES[@]}" "${COPIES[@]}" || fail "há nós inacessíveis a partir de $src"
 done
 ok "todos os nós comunicam entre si"
 pause

@@ -1,5 +1,5 @@
 // Painel do Administrador: o estado da instituição para decidir.
-//  [ nós por região: EU · AM · AF (primário/réplica, ativo/em baixo) + serviços (12) ]
+//  [ nós por região: EU · AM · AF (dono/cópia, ativo/em baixo) + serviços (12) ]
 //  [ aprovações pendentes (7)                 ] [ limites em vigor (5)                ]
 //  [ alertas de transações suspeitas (7)      ] [ transferências por dia + custódia (5)]
 import { api } from "../api.js";
@@ -42,20 +42,19 @@ export async function render({ root, navigate }) {
       `<a class="btn btn-secondary" href="#/admin/infra">${icon("server")} Infraestrutura</a><a class="btn btn-primary" href="#/admin/approvals">${icon("check")} Aprovações${pending.length ? ` · ${pending.length}` : ""}</a>`)}
 
     <section class="panel">
-      <div class="panel-head"><div><h3>Estado dos nós por região</h3><div class="sub">cada região tem um primário e uma réplica em streaming</div></div>
+      <div class="panel-head"><div><h3>Estado dos nós por região</h3><div class="sub">cada base tem uma cópia noutro nó, que assume o seu papel se o nó cair</div></div>
         <span class="chip ${down ? "status-failed" : "status-done"}">${icon(down ? "alert" : "check")}${down ? "serviço degradado" : "operacional"}</span></div>
       <div class="region-nodes">
         ${REGION_CODES.map((r) => {
-          const node = REGIONS[r].node;
-          const pair = [dbs[node], dbs[`${node}-replica`]];
-          const ok = pair.every((n) => n?.up);
+          const pair = Object.values(dbs).filter((d) => d.cluster === r).sort((a) => (a.location === "dono" ? -1 : 1));
+          const ok = status?.clusters_available?.[r] ?? pair.every((n) => n?.up);
           return `<div class="region-col"><header><span class="region-tag">${r}</span><span class="grow"><b>${esc(regionName(r))}</b><br><span>${esc(REGIONS[r].city)} · ${esc(REGIONS[r].currency)}</span></span>
               <span class="status-dot ${ok ? "" : "down"}"></span></header>
-            ${nodeRow(node, pair[0])}${nodeRow(`${node}-replica`, pair[1])}</div>`;
+            ${pair.map((d) => nodeRow(`${d.location} · ${d.node}:${d.port}`, d)).join("")}</div>`;
         }).join("")}
       </div>
       <div class="svc-strip">
-        ${[["pg-core", dbs["pg-core"], "Núcleo (pg-core)"], ...services.map(([n, v]) => [n, v, SERVICE_LABEL[n]]), ["nfs", status?.nfs, "NFS (auditoria)"]]
+        ${[["pg-core", { up: status?.clusters_available?.CORE }, "Núcleo (pg-core)"], ...services.map(([n, v]) => [n, v, SERVICE_LABEL[n]]), ["nfs", status?.nfs, "NFS (auditoria)"]]
           .map(([, v, label]) => `<span class="chip"><span class="status-dot ${v?.up ? "" : "down"}" style="width:7px;height:7px"></span>${esc(label)}</span>`).join("")}
       </div>
     </section>

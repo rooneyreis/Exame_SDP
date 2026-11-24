@@ -12,7 +12,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from conftest import REPO, node_role, psql, run, shard_conninfo, wait_until
+from conftest import REPO, node_role, psql, run, shard_conninfo, wait_back_home, wait_until
 
 CA = str(REPO / "infra" / "certs" / "ca.crt")
 STAFF = "Staff#2026"
@@ -233,21 +233,23 @@ def test_closing_an_empty_account(http, client, staff):
 # ---------- listing with a region down ----------
 
 def test_listing_with_a_region_down_returns_the_others(http, client):
-    run(["docker", "stop", "pg-africa", "pg-africa-replica"])
+    # África is totally down only when its node AND the node keeping its copy (pg-europa) are
+    # down; meanwhile Europa keeps working, taken over by its copy on pg-america.
+    run(["docker", "stop", "pg-africa", "pg-europa"])
     try:
+        assert wait_until(lambda: node_role("pg-america", 5433) == "primary", timeout=60, interval=2)
+        assert wait_until(lambda: http.get("/accounts", headers=client["h"]).headers.get("X-Unavailable-Regions") == "AF",
+                          timeout=60, interval=2)
         r = http.get("/accounts", headers=client["h"])
         assert r.status_code == 200
-        assert r.headers.get("X-Unavailable-Regions") == "AF"
-        # EU and AM read from their shards; the África accounts show only the amount held in
+        # EU and AM read from their databases; the África accounts show only the amount held in
         # custody elsewhere (phase 11), flagged as unavailable.
         assert {a["region"] for a in r.json() if not a["region_unavailable"]} == {"EU", "AM"}
         assert {a["region"] for a in r.json() if a["region_unavailable"]} <= {"AF"}
         assert http.get("/me", headers=client["h"]).json()["unavailable_regions"] == ["AF"]
     finally:
-        run(["docker", "start", "pg-africa"])
-        assert wait_until(lambda: node_role("pg-africa") == "primary", timeout=90, interval=2)
-        run(["docker", "start", "pg-africa-replica"])
-        assert wait_until(lambda: node_role("pg-africa-replica") == "replica", timeout=120, interval=2)
+        run(["docker", "start", "pg-europa", "pg-africa"])
+    assert all(wait_back_home(c, timeout=180) for c in ("EU", "AF", "AM"))
     assert wait_until(lambda: "X-Unavailable-Regions" not in http.get("/accounts", headers=client["h"]).headers,
                       timeout=60, interval=2)
 

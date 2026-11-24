@@ -1,19 +1,19 @@
 
 ══════ Cenário 15 — Várias contas por cliente (regiões e moedas diferentes) ══════
-(2026-11-23T22:09:39Z)
+(2026-11-24T08:41:25Z)
 
 ▶ 1. Um cliente novo, registado na Europa, com a primeira conta aberta pelo KYC
   POST /auth/register -> HTTP 201
   ✔ registo na região EU (HTTP 201)
-  POST /admin/users/3e3189da-7a0b-4de2-af4b-ed35d1d9ba3f/approve-kyc -> HTTP 200
+  POST /admin/users/e917b753-b954-4247-8326-bb57831bdd7c/approve-kyc -> HTTP 200
   ✔ KYC aprovado (HTTP 200)
-  POST /accounts/GS-EU-00000041/deposit -> HTTP 200 (X-Served-By: api-1)
-  ✔ depósito de 2000.00 EUR ao balcão em GS-EU-00000041 (HTTP 200)
+  POST /accounts/GS-EU-00000141/deposit -> HTTP 200 (X-Served-By: api-1)
+  ✔ depósito de 2000.00 EUR ao balcão em GS-EU-00000141 (HTTP 200)
   POST /auth/login -> HTTP 200
   GET /accounts -> HTTP 200 (X-Served-By: api-2)
     [
       {
-        "iban": "GS-EU-00000041",
+        "iban": "GS-EU-00000141",
         "region": "EU",
         "currency": "EUR",
         "balance": "2000.00"
@@ -24,7 +24,7 @@
   POST /account-requests -> HTTP 201 (X-Served-By: api-1)
   ✔ pedido registado (HTTP 201)
     {
-      "id": "17e4805a-d667-4489-8cce-600b876f88a8",
+      "id": "a57e70f1-3c03-457a-80eb-a61d7f70fc6c",
       "kind": "ABERTURA",
       "region": "AF",
       "currency": "MZN",
@@ -35,52 +35,52 @@
 
 ▶ 3. O operador vê o pedido na fila e aprova
   GET /admin/account-requests?status=PENDENTE -> HTTP 200 (X-Served-By: api-1)
-    {"id":"17e4805a-d667-4489-8cce-600b876f88a8","user_id":"3e3189da-7a0b-4de2-af4b-ed35d1d9ba3f","kind":"ABERTURA","region":"AF","currency":"MZN","status":"PENDENTE"}
-  POST /admin/account-requests/17e4805a-d667-4489-8cce-600b876f88a8/approve -> HTTP 200 (X-Served-By: api-2)
+    {"id":"a57e70f1-3c03-457a-80eb-a61d7f70fc6c","user_id":"e917b753-b954-4247-8326-bb57831bdd7c","kind":"ABERTURA","region":"AF","currency":"MZN","status":"PENDENTE"}
+  POST /admin/account-requests/a57e70f1-3c03-457a-80eb-a61d7f70fc6c/approve -> HTTP 200 (X-Served-By: api-2)
   ✔ pedido aprovado (HTTP 200)
     {
       "request": "APROVADO",
       "account": {
-        "iban": "GS-AF-00000073",
+        "iban": "GS-AF-00000173",
         "region": "AF",
         "currency": "MZN",
         "created": true
       }
     }
-  POST /admin/account-requests/17e4805a-d667-4489-8cce-600b876f88a8/approve -> HTTP 409 (X-Served-By: api-1)
+  POST /admin/account-requests/a57e70f1-3c03-457a-80eb-a61d7f70fc6c/approve -> HTTP 409 (X-Served-By: api-1)
   ✔ aprovar outra vez não cria uma segunda conta (HTTP 409)
 
 ▶ 4. A conta existe só no shard África (o cliente registou-se na Europa)
-  $ psql "host=pg-europa.global.local,pg-europa-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT 'pg-europa' AS no, count(*) AS contas_do_cliente, string_agg(iban || ' ' || currency, ', ') AS contas FROM accounts WHERE user_id = '3e3189da-7a0b-4de2-af4b-ed35d1d9ba3f'"
+  $ psql "host=pg-europa.global.local port=5432 dbname=bank" -c "SELECT 'pg-europa' AS no, count(*) AS contas_do_cliente, string_agg(iban || ' ' || currency, ', ') AS contas FROM accounts WHERE user_id = 'e917b753-b954-4247-8326-bb57831bdd7c'"
         no     | contas_do_cliente |       contas       
     -----------+-------------------+--------------------
-     pg-europa |                 1 | GS-EU-00000041 EUR
+     pg-europa |                 1 | GS-EU-00000141 EUR
     (1 row)
     
-  $ psql "host=pg-america.global.local,pg-america-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT 'pg-america' AS no, count(*) AS contas_do_cliente, string_agg(iban || ' ' || currency, ', ') AS contas FROM accounts WHERE user_id = '3e3189da-7a0b-4de2-af4b-ed35d1d9ba3f'"
+  $ psql "host=pg-america.global.local port=5432 dbname=bank" -c "SELECT 'pg-america' AS no, count(*) AS contas_do_cliente, string_agg(iban || ' ' || currency, ', ') AS contas FROM accounts WHERE user_id = 'e917b753-b954-4247-8326-bb57831bdd7c'"
          no     | contas_do_cliente | contas 
     ------------+-------------------+--------
      pg-america |                 0 | 
     (1 row)
     
-  $ psql "host=pg-africa.global.local,pg-africa-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT 'pg-africa' AS no, count(*) AS contas_do_cliente, string_agg(iban || ' ' || currency, ', ') AS contas FROM accounts WHERE user_id = '3e3189da-7a0b-4de2-af4b-ed35d1d9ba3f'"
+  $ psql "host=pg-africa.global.local port=5432 dbname=bank" -c "SELECT 'pg-africa' AS no, count(*) AS contas_do_cliente, string_agg(iban || ' ' || currency, ', ') AS contas FROM accounts WHERE user_id = 'e917b753-b954-4247-8326-bb57831bdd7c'"
         no     | contas_do_cliente |       contas       
     -----------+-------------------+--------------------
-     pg-africa |                 1 | GS-AF-00000073 MZN
+     pg-africa |                 1 | GS-AF-00000173 MZN
     (1 row)
     
   POST /auth/login -> HTTP 200
   GET /accounts -> HTTP 200 (X-Served-By: api-2)
     [
       {
-        "iban": "GS-EU-00000041",
+        "iban": "GS-EU-00000141",
         "region": "EU",
         "currency": "EUR",
         "balance": "2000.00",
         "status": "ATIVA"
       },
       {
-        "iban": "GS-AF-00000073",
+        "iban": "GS-AF-00000173",
         "region": "AF",
         "currency": "MZN",
         "balance": "0.00",
@@ -113,14 +113,14 @@
       "converted_amount": "7050.00",
       "to_currency": "MZN"
     }
-    22:09:43.814  INICIADA   {"kind":"DISTRIBUIDA","amount":"100.00","signer":"api-2","fx_rate":"70.50000000","converted":"7050.00","approved_by":null,"to_currency":"MZN","initiated_by":"3e3189da-7a0b-4de2-af4b-ed35d1d9ba3f","from_currency":"EUR","initiated_role":"cliente"}
-    22:09:43.819  PREPARANDO
-    22:09:43.837  PREPARADO_EU   {"iban":"GS-EU-00000041","side":"DEBITO"}
-    22:09:43.856  PREPARADO_AF   {"iban":"GS-AF-00000073","side":"CREDITO"}
-    22:09:43.860  DECISAO_COMMIT
-    22:09:43.863  COMMIT_EU
-    22:09:43.868  COMMIT_AF
-    22:09:43.872  CONFIRMADA
+    08:41:29.609  INICIADA   {"kind":"DISTRIBUIDA","amount":"100.00","signer":"api-2","fx_rate":"70.50000000","converted":"7050.00","approved_by":null,"to_currency":"MZN","initiated_by":"e917b753-b954-4247-8326-bb57831bdd7c","from_currency":"EUR","initiated_role":"cliente"}
+    08:41:29.616  PREPARANDO
+    08:41:29.637  PREPARADO_EU   {"iban":"GS-EU-00000141","side":"DEBITO"}
+    08:41:29.656  PREPARADO_AF   {"iban":"GS-AF-00000173","side":"CREDITO"}
+    08:41:29.663  DECISAO_COMMIT
+    08:41:29.670  COMMIT_EU
+    08:41:29.676  COMMIT_AF
+    08:41:29.684  CONFIRMADA
   GET /me/limits -> HTTP 200 (X-Served-By: api-1)
     {
       "sent_today_eur": "0.00",
@@ -151,12 +151,12 @@
   GET /accounts -> HTTP 200 (X-Served-By: api-2)
     [
       {
-        "iban": "GS-EU-00000041",
+        "iban": "GS-EU-00000141",
         "currency": "EUR",
         "balance": "1900.00"
       },
       {
-        "iban": "GS-AF-00000073",
+        "iban": "GS-AF-00000173",
         "currency": "MZN",
         "balance": "3525.00"
       }
@@ -164,8 +164,8 @@
 
 ▶ 8. Verificação final
   GET /admin/consistency -> HTTP 200 (X-Served-By: api-1)
-    {"ok":true,"checked_transactions":122,"confirmed":105,"aborted":17,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[],"AF":[]},"problems":[]}
+    {"ok":true,"checked_transactions":287,"confirmed":258,"aborted":29,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[],"AF":[]},"problems":[]}
   ✔ /admin/consistency OK: sem dinheiro perdido nem duplicado
 
 ══════ Cenário 15 concluído ══════
-(2026-11-23T22:09:44Z)
+(2026-11-24T08:41:30Z)

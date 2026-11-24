@@ -1,6 +1,6 @@
 
 ══════ Cenário 12 — TLS obrigatório em todos os canais ══════
-(2026-11-23T22:08:27Z)
+(2026-11-24T08:39:39Z)
 
 ▶ 1. PostgreSQL sem TLS (sslmode=disable) → recusado pelo pg_hba.conf
   ✔ pg-core: ligação sem TLS rejeitada ("no encryption")
@@ -12,23 +12,22 @@
   ✔ verify-full detetou o servidor falso
 
 ▶ 3. Todas as ligações ativas aos Postgres estão cifradas
-      usename   | application_name  | ssl | version |         cipher         
-    ------------+-------------------+-----+---------+------------------------
-     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
-     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
-     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
-     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
-     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
-     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
-     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
-     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
-     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
-     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
-     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
-     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
-     api_svc    | api_svc           | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
-     replicator | pg-europa-replica | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
-    (14 rows)
+      usename   | application_name | ssl | version |         cipher         
+    ------------+------------------+-----+---------+------------------------
+     api_svc    | api_svc          | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc          | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc          | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc          | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc          | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc          | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc          | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc          | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc          | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc          | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc          | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     api_svc    | api_svc          | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+     replicator | copy_EU          | t   | TLSv1.3 | TLS_AES_256_GCM_SHA384
+    (13 rows)
     
   ✔ 0 ligações de rede sem TLS
 
@@ -60,4 +59,4 @@
   ✔ TLS 1.1 recusado (mínimo TLS 1.2)
 
 ══════ Cenário 12 concluído ══════
-(2026-11-23T22:08:32Z)
+(2026-11-24T08:39:44Z)

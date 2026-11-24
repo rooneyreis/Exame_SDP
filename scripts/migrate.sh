@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 PSQL=(docker compose run --rm -T pgclient)
 
 for db in auth coordinator; do
-  conn="host=pg-core.global.local dbname=$db sslmode=verify-full"
+  conn="host=pg-core.global.local,pg-america.global.local port=5432,5434 target_session_attrs=read-write dbname=$db sslmode=verify-full"
   "${PSQL[@]}" "$conn" -q -c "CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())" 2>/dev/null
   for file in infra/postgres/migrations/$db/*.sql; do
     [[ -e "$file" ]] || continue
@@ -23,11 +23,12 @@ for db in auth coordinator; do
   done
 done
 # Base de dados "bank" de cada shard (conninfo multi-host: funciona também depois de um failover).
-declare -A SHARD=( [EU]=pg-europa [AM]=pg-america [AF]=pg-africa )
+# Each shard lives on its node and its copy on the next node of the ring (common/topology.json).
+declare -A SHARD=( [EU]="pg-europa.global.local,pg-america.global.local" [AM]="pg-america.global.local,pg-africa.global.local" [AF]="pg-africa.global.local,pg-europa.global.local" )
 IFS=',' read -ra REGION_LIST <<< "${GSS_REGIONS:-EU,AM,AF}"
 for region in "${REGION_LIST[@]}"; do
   node=${SHARD[$region]}
-  conn="host=$node.global.local,$node-replica.global.local target_session_attrs=read-write dbname=bank sslmode=verify-full"
+  conn="host=$node port=5432,5433 target_session_attrs=read-write dbname=bank sslmode=verify-full"
   "${PSQL[@]}" "$conn" -q -c "CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())" 2>/dev/null
   for file in infra/postgres/migrations/bank/*.sql; do
     [[ -e "$file" ]] || continue

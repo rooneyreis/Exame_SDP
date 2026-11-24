@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Scenario 09: a shard goes down DURING a 2PC, after both shards prepared.
 # The coordinator decides COMMIT, Europa commits, America is unreachable -> the decision is
-# durable, so the recovery loop keeps retrying and finishes when pg-america comes back.
+# durable. Meanwhile the copy of America (on pg-africa) takes over: the prepared transaction
+# is there (synchronous replication), so the recovery loop commits it on the copy.
+# pg-america comes back later and takes its role back.
 source "$(dirname "$0")/lib.sh"
 
 title "Cenário 09 — Queda de um shard durante o 2PC"
@@ -27,28 +29,32 @@ pause
 
 step "3. Derrubar o pg-america enquanto o coordenador ainda não decidiu"
 cmd "docker stop pg-america"; docker stop pg-america >/dev/null
-ok "pg-america parado (a réplica continua, mas só aceita leituras)"
+ok "pg-america parado"
+SECS=$(wait_role pg-africa 5433 f 40) || fail "a cópia da América não assumiu o papel"
+ok "a cópia da América em pg-africa:5433 assumiu o papel em ${SECS}s"
+info "a transação preparada também está na cópia (chegou lá antes de o pg-america cair):"
+docker exec pg-africa psql -U postgres -p 5433 -tAc "SELECT gid FROM pg_prepared_xacts" | sed 's/^/    /'
 info "à espera do fim da pausa..."
 wait $CURL_PID
 LAST_STATUS=$(tail -1 "$OUT"); LAST_BODY=$(head -n -1 "$OUT")
 info "resposta: HTTP $LAST_STATUS  state=$(echo "$LAST_BODY" | jq -r .state)"
 TX=$(echo "$LAST_BODY" | jq -r .tx_id)
 timeline
-[[ "$(echo "$LAST_BODY" | jq -r .state)" == DECISAO_COMMIT ]] && ok "decisão COMMIT gravada; Europa fez commit, América pendente" || fail "esperava DECISAO_COMMIT"
+state=$(echo "$LAST_BODY" | jq -r .state)
+[[ "$state" == DECISAO_COMMIT || "$state" == CONFIRMADA ]] && ok "decisão COMMIT gravada; Europa fez commit" || fail "esperava DECISAO_COMMIT"
 pause
 
-step "4. Enquanto o pg-america está em baixo, o recovery loop tenta com backoff exponencial"
-sleep 6
-docker logs --since 15s coordinator 2>&1 | grep -m3 'recovery: shard AM' | jq -r .msg 2>/dev/null | sed 's/^/    /' || true
-info "a transação preparada continua guardada no disco do pg-america (pg_twophase), à espera"
-
-step "5. Voltar a ligar o pg-america"
-cmd "docker start pg-america"; docker start pg-america >/dev/null
-wait_healthy pg-america
-info "a aguardar o recovery loop..."
+step "4. O recovery loop conclui o COMMIT na cópia da América, sem esperar pelo pg-america"
 wait_tx_state "$TX" CONFIRMADA 60 || fail "a transação não foi concluída"
-ok "recovery fez COMMIT PREPARED no pg-america → CONFIRMADA"
+ok "COMMIT PREPARED feito na cópia (pg-africa:5433) → CONFIRMADA, com o pg-america ainda em baixo"
 timeline
+pause
+
+step "5. Voltar a ligar o pg-america: sincroniza-se e retoma o seu papel"
+cmd "docker start pg-america"; docker start pg-america >/dev/null
+wait_all_home || fail "a topologia não voltou ao normal"
+topology
+ok "pg-america é de novo o primário da América, com a transação confirmada"
 pause
 
 step "6. Verificação: sem dinheiro perdido"

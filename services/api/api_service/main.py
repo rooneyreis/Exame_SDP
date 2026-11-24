@@ -25,7 +25,8 @@ from fastapi.responses import JSONResponse
 from common import custody, limits
 from common.audit import AuditLog, verify_chain
 from common.crypto import canonical_json, load_ed25519_private, signed_headers
-from common.db import REGIONS, SHARD_NODES, ShardRouter, is_valid_iban, make_pool, region_of_iban, shard_conninfo
+from common.db import (CLUSTER_LOCATIONS, REGIONS, ShardRouter, core_conninfo, is_valid_iban, make_pool,
+                       region_of_iban, shard_conninfo)
 from common.jwt_auth import TokenValidator, auth_dependencies, client_ip
 from common.rbac import has_permission
 from common.logging import add_request_logging, log_extra, setup_logging, tx_id_var
@@ -62,9 +63,7 @@ shards = ShardRouter(
     {r: shard_conninfo(r, settings.db_user, settings.db_password, settings.ca_file) for r in REGIONS},
     # read-only endpoints may be served by the replica while the primary is down
     {r: shard_conninfo(r, settings.db_user, settings.db_password, settings.ca_file, read_only=True) for r in REGIONS})
-core = make_pool(
-    f"host=pg-core.global.local dbname=coordinator user={settings.db_user} password={settings.db_password} "
-    f"sslmode=verify-full sslrootcert={settings.ca_file} connect_timeout=3", max_size=5)
+core = make_pool(core_conninfo("coordinator", settings.db_user, settings.db_password, settings.ca_file), max_size=5)
 
 SIGNING_KEY = load_ed25519_private(settings.signing_key)
 # Long read timeout: a transfer may be paused by the chaos mode pause_after_prepare.
@@ -635,15 +634,17 @@ SERVICES_HEALTH = {
     "api-1": "https://api-1.global.local:8000/health",
     "api-2": "https://api-2.global.local:8000/health",
 }
-DB_NODES = {"pg-core": "coordinator"} | {
-    node.split(".")[0]: "bank" for r in REGIONS for node in SHARD_NODES[r]
-}
+# Every database in its two locations of the ring: (cluster, "dono"/"cópia", host, port, dbname).
+DB_LOCATIONS = [
+    (cluster, ("dono", "cópia")[i], host, port, "coordinator" if cluster == "CORE" else "bank")
+    for cluster, locs in CLUSTER_LOCATIONS.items() for i, (host, port) in enumerate(locs)
+]
 
 
 @app.get("/admin/status")
 async def cluster_status(claims: dict = Depends(require_permission("system:status"))):
-    """State of every node: services (HTTPS /health), databases (primary/replica,
-    pending prepared transactions) and the NFS."""
+    """State of every node: services (HTTPS /health), databases (each one in its two
+    locations of the ring: which is the primary, which is the copy), and the NFS."""
     async def service(name: str, url: str):
         start = time.perf_counter()
         try:
@@ -653,21 +654,26 @@ async def cluster_status(claims: dict = Depends(require_permission("system:statu
         except Exception as exc:
             return name, {"up": False, "error": type(exc).__name__}
 
-    async def database(node: str, dbname: str):
-        conninfo = (f"host={node}.global.local dbname={dbname} user={settings.db_user} password={settings.db_password} "
+    async def database(cluster: str, location: str, host: str, port: int, dbname: str):
+        node = host.split(".")[0]
+        key = f"{cluster}@{node}:{port}"
+        base = {"cluster": cluster, "location": location, "node": node, "port": port}
+        conninfo = (f"host={host} port={port} dbname={dbname} user={settings.db_user} password={settings.db_password} "
                     f"sslmode=verify-full sslrootcert={settings.ca_file} connect_timeout=2")
         try:
             async with await psycopg.AsyncConnection.connect(conninfo) as conn:
                 row = await (await conn.execute(
                     "SELECT pg_is_in_recovery(), (SELECT count(*) FROM pg_prepared_xacts), "
-                    "(SELECT count(*) FROM pg_stat_replication), current_setting('ssl')")).fetchone()
-            return node, {"up": True, "role": "réplica" if row[0] else "primário", "prepared_xacts": row[1],
-                          "replicas_streaming": row[2], "ssl": row[3]}
+                    "(SELECT count(*) FROM pg_stat_replication), current_setting('ssl'), "
+                    "current_setting('default_transaction_read_only'), current_setting('synchronous_standby_names')")).fetchone()
+            return key, {**base, "up": True, "role": "cópia (standby)" if row[0] else "primário",
+                         "prepared_xacts": row[1], "replicas_streaming": row[2], "ssl": row[3],
+                         "read_only": row[4] == "on", "synchronous": bool(row[5]) and not row[0]}
         except Exception as exc:
-            return node, {"up": False, "error": type(exc).__name__}
+            return key, {**base, "up": False, "error": type(exc).__name__}
 
     results = await asyncio.gather(*(service(n, u) for n, u in SERVICES_HEALTH.items()),
-                                   *(database(n, d) for n, d in DB_NODES.items()))
+                                   *(database(*loc) for loc in DB_LOCATIONS))
     services = dict(results[:len(SERVICES_HEALTH)])
     databases = dict(results[len(SERVICES_HEALTH):])
     services[settings.instance_id] = {"up": True, "self": True}
@@ -676,7 +682,11 @@ async def cluster_status(claims: dict = Depends(require_permission("system:statu
         nfs = {"up": True, "mount": settings.audit_dir, "days": days[-5:]}
     except OSError as exc:
         nfs = {"up": False, "error": repr(exc)}
+    # A database is available while ONE of its two locations is the primary (the other may be down).
+    clusters = {c: any(v["up"] and v["role"] == "primário" for v in databases.values() if v["cluster"] == c)
+                for c in CLUSTER_LOCATIONS}
     return {"served_by": settings.instance_id, "services": services, "databases": databases, "nfs": nfs,
+            "clusters_available": clusters,
             "all_up": all(v["up"] for v in [*services.values(), *databases.values(), nfs])}
 
 

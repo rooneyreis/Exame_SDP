@@ -1,0 +1,11 @@
+{
+  "_doc": "Onde vive cada base de dados: o nó 'home' (dono) e o nó que guarda a sua cópia (anel). Quando o home falha, a cópia é promovida automaticamente e assume o seu papel; quando o home volta, sincroniza-se e retoma-o. Lido pelos serviços (common/db.py) e pelo supervisor de cada nó Postgres (infra/postgres/supervisor.py).",
+  "failover_after_seconds": 6,
+  "nodes": ["pg-core", "pg-europa", "pg-america", "pg-africa"],
+  "clusters": {
+    "CORE": {"home": ["pg-core", 5432], "copy": ["pg-america", 5434], "init": "core"},
+    "EU": {"home": ["pg-europa", 5432], "copy": ["pg-america", 5433], "init": "shard"},
+    "AM": {"home": ["pg-america", 5432], "copy": ["pg-africa", 5433], "init": "shard"},
+    "AF": {"home": ["pg-africa", 5432], "copy": ["pg-europa", 5433], "init": "shard"}
+  }
+}

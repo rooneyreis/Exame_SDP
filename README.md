@@ -2,12 +2,12 @@
 
 Plataforma distribuída de transações financeiras internacionais de alta disponibilidade. Exame Prático Laboratorial de **Sistemas Distribuídos e Paralelos**, ISUTC, LECC 31.
 
-Clientes da Europa, da América e de África têm os dados em **nós de base de dados diferentes** (um shard por região, cada um com réplica). Transferências entre regiões são **transações distribuídas com Two-Phase Commit**, com recuperação automática. O sistema continua a funcionar e **nunca fica inconsistente** quando cai um nó ou a rede.
+Clientes da Europa, da América e de África têm os dados em **nós de base de dados diferentes** (um shard por região; a cópia de cada base vive noutro nó e assume o seu papel se esse nó cair). Transferências entre regiões são **transações distribuídas com Two-Phase Commit**, com recuperação automática. O sistema continua a funcionar e **nunca fica inconsistente** quando cai um nó ou a rede.
 
 | Área do exame | Onde está |
 |---|---|
 | Arquitetura, SO e Redes, DFS | Docker Compose, rede `globalnet` com IPs fixos e DNS `*.global.local`, NFS v4 (NFS-Ganesha) |
-| Processamento e Transações | coordenador 2PC (`services/coordinator`), shards PostgreSQL com réplicas e failover |
+| Processamento e Transações | coordenador 2PC (`services/coordinator`), shards PostgreSQL em anel de cópias com troca automática |
 | Serviços Web e Interoperabilidade | API REST FastAPI + banco parceiro em Java 21 com XML assinado; análise OMG/OMA |
 | Segurança | TLS em tudo, JWT RS256 descentralizado, Ed25519 + SHA-256, AES-256-GCM em repouso, Argon2id |
 | Documentação e Defesa | este README, [`docs/relatorio/`](docs/relatorio/README.md), 18 cenários (00–17) de demo com evidências |
@@ -35,9 +35,10 @@ flowchart TB
     CO -- 2PC --> PA[(pg-america)]
     CO -- 2PC --> PF[(pg-africa)]
     A1 & A2 --> PE & PA & PF
-    PE -- streaming TLS --> PER[(pg-europa-replica)]
-    PA -- streaming TLS --> PAR[(pg-america-replica)]
-    PF -- streaming TLS --> PFR[(pg-africa-replica)]
+    PE -. cópia síncrona da Europa .-> PA
+    PA -. cópia síncrona da América .-> PF
+    PF -. cópia síncrona de África .-> PE
+    PC -. cópia síncrona do pg-core .-> PA
     NFS[[nfs: /audit]]
     AU & A1 & A2 & CO -. NFS v4 .-> NFS
 ```
@@ -50,10 +51,10 @@ flowchart TB
 | `coordinator` | Python 3.12, FastAPI, psycopg 3 | coordenador 2PC, log durável, recuperação, liquidação com o legado |
 | `legacy-bank` | Java 21 (só JDK) | "mainframe" do banco parceiro: XML assinado, ledger de largura fixa |
 | `nfs` | NFS-Ganesha | DFS: auditoria e relatórios partilhados |
-| `pg-core` | PostgreSQL 16 | BD `auth` e BD `coordinator` |
-| `pg-europa` (+réplica) | PostgreSQL 16 | shard Europa (`GS-EU-*`) |
-| `pg-america` (+réplica) | PostgreSQL 16 | shard América (`GS-AM-*`) |
-| `pg-africa` (+réplica) | PostgreSQL 16 | shard África (`GS-AF-*`, moeda base MZN) |
+| `pg-core` | PostgreSQL 16 + supervisor | BD `auth` e BD `coordinator` |
+| `pg-europa` | PostgreSQL 16 + supervisor | shard Europa (`GS-EU-*`) · cópia de África (porta 5433) |
+| `pg-america` | PostgreSQL 16 + supervisor | shard América (`GS-AM-*`) · cópias da Europa (5433) e do pg-core (5434) |
+| `pg-africa` | PostgreSQL 16 + supervisor | shard África (`GS-AF-*`, moeda base MZN) · cópia da América (5433) |
 
 ## Requisitos e arranque
 
@@ -89,9 +90,9 @@ Rede Docker bridge `globalnet`, subnet `172.28.0.0/24`, IPs fixos. Cada serviço
 | legacy-bank | 172.28.0.40 | 9443 |
 | nfs | 172.28.0.50 | 2049 |
 | pg-core | 172.28.0.60 | 5432 |
-| pg-europa / réplica | 172.28.0.61 / .62 | 5432 |
-| pg-america / réplica | 172.28.0.63 / .64 | 5432 |
-| pg-africa / réplica | 172.28.0.65 / .66 | 5432 |
+| pg-europa | 172.28.0.61 | 5432 (Europa) · 5433 (cópia de África) |
+| pg-america | 172.28.0.63 | 5432 (América) · 5433 (cópia da Europa) · 5434 (cópia do pg-core) |
+| pg-africa | 172.28.0.65 | 5432 (África) · 5433 (cópia da América) |
 
 ## Sistema de ficheiros distribuído (NFS v4)
 
@@ -107,37 +108,48 @@ Validação (`tests/integration/test_phase0_nfs.py`): dois contentores escrevem 
 
 ## Base de dados distribuída (PostgreSQL 16)
 
-| Nó | Conteúdo |
-|---|---|
-| `pg-core` | BD `auth` (utilizadores, refresh tokens) e BD `coordinator` (log 2PC, eventos, câmbios) |
-| `pg-europa` → `pg-europa-replica` | BD `bank` do shard Europa (só IBANs `GS-EU-…`) + réplica streaming |
-| `pg-america` → `pg-america-replica` | BD `bank` do shard América (só IBANs `GS-AM-…`) + réplica streaming |
-| `pg-africa` → `pg-africa-replica` | BD `bank` do shard África (só IBANs `GS-AF-…`, contas em MZN) + réplica streaming |
+Quatro nós Postgres. Cada nó tem **a sua base** (porta 5432) e guarda **a cópia da base de outro nó**, num anel:
+
+| Base | Dono (primário) | Cópia (standby síncrono) |
+|---|---|---|
+| `pg-core`: BD `auth` (utilizadores) e `coordinator` (log 2PC, eventos, câmbios) | `pg-core:5432` | `pg-america:5434` |
+| Europa: BD `bank`, só IBANs `GS-EU-…` | `pg-europa:5432` | `pg-america:5433` |
+| América: BD `bank`, só IBANs `GS-AM-…` | `pg-america:5432` | `pg-africa:5433` |
+| África: BD `bank`, só IBANs `GS-AF-…` (MZN) | `pg-africa:5432` | `pg-europa:5433` |
+
+A topologia está num só ficheiro, [`common/topology.json`](common/topology.json), lido pelos serviços (`common/db.py`) e pelo supervisor de cada nó.
 
 ### Regiões: uma única fonte de verdade
 
 As regiões servidas vêm de `GSS_REGIONS` (`.env` / `docker-compose.yml`, por omissão `EU,AM,AF`). Em `common/db.py`, o padrão do IBAN (`^GS-(EU|AM|AF)-[0-9]{8}$`), os nós de cada shard e a moeda base de cada região (EUR, USD, MZN) são gerados a partir dessa lista. Os tipos dos pedidos (`Literal[REGIONS]`) também, por isso uma região desconhecida dá `422`. No coordenador, `REGION_ORDER = ("EU", "AM", "AF")` é a ordem global de bloqueio, e o serviço recusa arrancar se faltar lá alguma região. No browser, a tabela equivalente está em `frontend/assets/js/format.js`.
 
-Para acrescentar uma região: um par de contentores `pg-<nome>` / `pg-<nome>-replica` no compose, o certificado em `gen-certs.sh` (os existentes são mantidos), a entrada em `REGION_CATALOG` e `REGION_ORDER` e uma migração das constraints de região (`infra/postgres/migrations/*/002_region_africa.sql` é o exemplo).
+Para acrescentar uma região: um contentor `pg-<nome>` no compose e a sua entrada no anel em `common/topology.json`, o certificado em `gen-certs.sh` (os existentes são mantidos), a entrada em `REGION_CATALOG` e `REGION_ORDER` e uma migração das constraints de região (`infra/postgres/migrations/*/002_region_africa.sql` é o exemplo).
 
 - **Fragmentação horizontal por região**: a regra está no próprio esquema (`CHECK (iban ~ '^GS-EU-[0-9]{8}$')` no shard EU). Uma conta da região errada é recusada pela BD.
 - **TLS obrigatório**: `pg_hba.conf` só tem `hostssl`. Qualquer ligação sem TLS é rejeitada (`no encryption`). Os clientes usam `sslmode=verify-full`, que verifica a CA e o nome do servidor (SAN). A replicação também corre sobre TLS (TLS 1.3).
-- **2PC**: `max_prepared_transactions = 100` em primários e réplicas.
+- **2PC**: `max_prepared_transactions = 100` em todas as bases, donos e cópias.
 - **Roles por serviço** com privilégio mínimo: `auth_svc` (só BD auth), `coord_svc`, `api_svc`.
-- **Um só entrypoint** (`infra/postgres/entrypoint.sh`) para todos os nós:
-  1. copia o certificado do nó com permissões `0600`;
-  2. réplica com o diretório vazio → `pg_basebackup -R` do primário;
-  3. antigo primário que volta depois de um failover → deteta que o par já é primário e **volta como réplica** (evita split-brain).
 
-### Failover
+### Um nó cai: a cópia assume o seu papel
+
+Cada nó Postgres corre um **supervisor** ([`infra/postgres/supervisor.py`](infra/postgres/supervisor.py), regras em [`failover_rules.py`](infra/postgres/failover_rules.py)) que, a cada 2 s, olha para cada base que o nó tem:
+
+1. **Normal**: a cópia recebe o WAL do dono em streaming **síncrono** (`synchronous_commit = remote_apply`). Uma transação, incluindo um `PREPARE TRANSACTION` do 2PC, só é confirmada quando já está aplicada nos dois nós. Por isso, assumir o papel nunca perde nada que tenha sido confirmado.
+2. **O nó dono cai**: ao fim de ~6 s sem o ver, o supervisor do nó que guarda a cópia **promove-a** (`pg_promote()`). Os serviços não mudam nada: a conninfo lista os dois sítios (`host=pg-europa,pg-america port=5432,5433 target_session_attrs=read-write`) e o libpq liga-se a quem aceita escritas. Saldos, transferências, depósitos, levantamentos e aberturas de conta continuam a funcionar. As transações preparadas estão na cópia, por isso o coordenador conclui-as lá.
+3. **O nó volta**: a base dele já não é a mais recente. Copia-se a partir da cópia (`pg_basebackup`) e fica a segui-la. Quando está em dia, a cópia **devolve-lhe o papel** (switchover limpo, sem perdas): fica só de leitura, espera que o dono receba o último WAL, para e volta como cópia, e o dono promove-se. A pausa nas escritas dessa base é de poucos segundos.
+4. **Nunca dois primários**:
+   - uma cópia só assume se ainda vir outro nó (testemunha) e se estava em dia com o dono quando ele desapareceu;
+   - um primário que não vê a cópia **nem** nenhum outro nó conclui que é ele o isolado e fica só de leitura;
+   - se dois primários se encontrarem, o de linha temporal (timeline) mais antiga passa a cópia do outro.
+5. **A cópia cai** (o dono continua): o dono passa a replicação para assíncrona e continua a aceitar escritas. Quando a cópia volta, sincroniza-se e a replicação volta a síncrona.
 
 ```bash
-docker stop pg-europa
-./scripts/failover.sh EU     # pg_promote() na réplica (EU, AM ou AF)
-docker start pg-europa       # volta sozinho como réplica do novo primário
+./scripts/topologia.sh       # onde está cada base e quem é o primário
+docker stop pg-europa        # em ~6 s a cópia em pg-america:5433 assume a Europa
+docker start pg-europa       # sincroniza-se e retoma o seu papel sozinho
 ```
 
-Os serviços ligam-se com conninfo multi-host (`host=pg-europa.global.local,pg-europa-replica.global.local target_session_attrs=read-write`): depois da promoção, as novas ligações vão para o novo primário sem mudar configuração. As **transações preparadas** (fase 1 do 2PC) estão no WAL, por isso aparecem em `pg_prepared_xacts` no nó promovido e o coordenador pode concluí-las lá. Na réplica em standby só ficam visíveis depois da promoção.
+Se um nó **e** o nó que guarda a sua cópia caírem ao mesmo tempo (por exemplo, `pg-africa` e `pg-europa`), essa região fica sem nenhuma cópia viva. Nesse caso entra a **custódia** (secção seguinte), e as outras regiões continuam a funcionar.
 
 ## Autenticação (serviço `auth`)
 
@@ -195,7 +207,7 @@ Segurança aplicada:
 - **Movimentos** têm `origin` (`TRANSFERENCIA`/`DEPOSITO`/`LEVANTAMENTO`): depósitos e levantamentos são transações locais do shard, as transferências passam pelo coordenador (Fase 4).
 - **Nginx**: round-robin entre `172.28.0.11` e `172.28.0.12`. `proxy_next_upstream error timeout http_502 http_503`: se uma instância não responde, o pedido é repetido na outra e a falhada fica de fora durante `fail_timeout=10s`. POSTs só são repetidos se nunca chegaram ao backend, por isso um depósito nunca é executado duas vezes. O TLS até aos backends é verificado (`proxy_ssl_verify on`, nome `api.global.local` presente nos dois certificados).
 - Header `X-Served-By` mostra que instância respondeu.
-- **Leituras com o primário em baixo**: os endpoints só de leitura tentam o primário (2 s) e, se não responder, usam a réplica (`target_session_attrs=any`). Saldos e extratos continuam disponíveis durante a falha (cenário 08); as escritas esperam pelo failover.
+- **Leituras durante a troca**: os endpoints só de leitura tentam o primário (2 s) e, se não responder, usam o outro sítio da base (`target_session_attrs=any`). Saldos e extratos continuam disponíveis mesmo nos segundos antes de a cópia assumir (cenário 08).
 - Uma BD indisponível dá `503` (nunca `500`).
 - Ligações aos shards com keepalives TCP e `tcp_user_timeout=8s`: um nó isolado pela rede é detetado em segundos, não em minutos (cenário 13).
 
@@ -243,7 +255,7 @@ Respostas: `201` CONFIRMADA, `200` repetição idempotente, `202` decisão tomad
 
 ### Região totalmente em baixo: custódia e reencaminhamento
 
-Se uma região fica **totalmente** inacessível (primário **e** réplica), as operações destinadas às suas contas não são recusadas. Se só cai o primário e a réplica responde, nada disto se aplica: as escritas esperam pelo failover, como antes.
+Se uma região fica **totalmente** inacessível (o seu nó **e** o nó que guarda a sua cópia), as operações destinadas às suas contas não são recusadas. Se só cai o nó dono, nada disto se aplica: a cópia assume o seu papel e tudo funciona normalmente.
 
 1. **Validação sem a região**: o `account_directory` no pg-core guarda `iban → titular, moeda, estado`. A api escreve-o quando cria ou altera uma conta, e o coordenador sincroniza-o a partir dos shards a cada 30 s.
 2. **Crédito em custódia**: uma transferência (ou depósito) para uma conta da região em baixo é confirmada. O crédito fica numa **conta de custódia** (`custody_accounts` / `custody_movements`) com o IBAN de destino, no primeiro shard ativo pela ordem global, ou no que já guarda valor para essa conta. Fica na moeda da conta de destino, convertido no momento.
@@ -311,7 +323,7 @@ dca0276b-d89b-5c3d-ac71-3171e6284dc0GS-EU-00000001GS-AM-00000001000000000010000E
 |---|---|---|---|
 | GET | `/admin/audit?date=AAAA-MM-DD` | auditor, admin | lê os logs de todos os nós no NFS e valida cada cadeia de hashes; aponta a primeira linha adulterada |
 | GET | `/admin/reports?date=` | auditor, admin | relatório diário partilhado (transações por estado/tipo, volume por região, depósitos/levantamentos) |
-| GET | `/admin/status` | admin, auditor | estado de todos os nós: serviços (HTTPS `/health`), BDs (primário/réplica, réplicas em streaming, preparadas pendentes, TLS), NFS |
+| GET | `/admin/status` | admin, auditor | estado de todos os nós: serviços (HTTPS `/health`), cada BD nos seus dois sítios (dono/cópia, quem é o primário, replicação síncrona, preparadas pendentes, TLS), NFS |
 | GET | `/admin/consistency` | auditor, admin | invariantes do 2PC em todos os shards |
 
 - **Auditoria à prova de adulteração**: cada nó escreve só no seu ficheiro `/audit/<AAAA-MM-DD>/<nó>.log` (sem conflitos de escrita). Cada linha JSON tem `prev_hash` e `hash = SHA-256(prev_hash + JSON canónico da linha)`. Alterar, apagar ou reordenar uma linha parte a cadeia a partir daí (cenário 05).
@@ -432,16 +444,16 @@ Cada script imprime o que vai fazer, executa com `curl --cacert infra/certs/ca.c
 | `05-adulteracao.sh` | 5 ataques ao canal api → coordinator recusados; linha alterada no NFS detetada por `/admin/audit` |
 | `06-queda-api.sh` | `docker stop api-1` → todos os pedidos servidos pela api-2 |
 | `07-queda-auth.sh` | `docker stop auth` → tokens existentes continuam válidos; login novo falha |
-| `08-queda-shard-failover.sh` | `docker stop pg-europa` → leituras pela réplica → `failover.sh EU` → transferências sem mudar configuração → antigo primário volta como réplica |
-| `09-queda-durante-2pc.sh` | `docker stop pg-america` entre o PREPARE e o COMMIT → recovery conclui quando volta |
+| `08-queda-shard-failover.sh` | `docker stop pg-europa` → em segundos a cópia em pg-america:5433 assume a Europa sozinha → transferências, depósitos e levantamentos continuam sem mudar configuração → pg-europa volta, sincroniza-se e retoma o seu papel |
+| `09-queda-durante-2pc.sh` | `docker stop pg-america` entre o PREPARE e o COMMIT → a cópia da América (pg-africa:5433) assume, tem a transação preparada → o recovery conclui o COMMIT nela → pg-america volta e retoma o papel |
 | `10-crash-coordenador.sh` | coordenador morre depois da decisão → reinicia sozinho → `COMMIT PREPARED` pela recuperação |
 | `11-concorrencia.sh` | 50 transferências concorrentes → 0 deadlocks, dinheiro conservado ao cêntimo |
 | `12-tls.sh` | Postgres sem TLS, HTTP simples (nginx, api, auth, coordinator, legado Java), TLS 1.1 e certificado de outro nó → tudo recusado |
-| `13-particao-rede.sh` | `docker network disconnect` do pg-america depois e antes do PREPARE → commit concluído / abort sem débito |
-| `14-regiao-africa.sh` | região África: registo AF → KYC → conta GS-AF em MZN no pg-africa; AF → AF local; 2PC EU → AF (EUR → MZN) e AF → AM (ordem EU → AM → AF); `fail_participant=AF` → rollback da Europa; failover e failback do shard África |
+| `13-particao-rede.sh` | `docker network disconnect` do pg-america: ele vê-se isolado e fica só de leitura; a cópia em pg-africa assume; transferências com a partição depois e antes do PREPARE são concluídas na cópia; a rede volta e pg-america retoma o papel |
+| `14-regiao-africa.sh` | região África: registo AF → KYC → conta GS-AF em MZN no pg-africa; AF → AF local; 2PC EU → AF (EUR → MZN) e AF → AM (ordem EU → AM → AF); `fail_participant=AF` → rollback da Europa; pg-africa cai → a cópia em pg-europa assume → pg-africa volta e retoma o papel |
 | `15-contas-multiplas.sh` | cliente registado na Europa pede uma conta em África → o operador aprova (aprovar outra vez não duplica) → a conta só existe no pg-africa → transferência entre contas próprias EU → AF (2PC + câmbio, não conta para o limite) → um envio a terceiros atualiza `/me/limits` |
 | `16-dfs-nfs.sh` | `/audit` montado por NFS v4 em 4 nós; ficheiro escrito num nó lido nos outros; logs de auditoria por nó e relatório partilhado lidos do NFS |
-| `17-custodia-regiao-em-baixo.sh` | África totalmente em baixo → transferência EU → AF confirmada em custódia na Europa → a titular usa o valor retido (transferência e levantamento, nunca acima do retido) → África volta → saldo restante e histórico reencaminhados automaticamente → consistência OK |
+| `17-custodia-regiao-em-baixo.sh` | África totalmente em baixo (pg-africa **e** pg-europa, que guarda a sua cópia; a Europa é assumida pela cópia em pg-america) → transferência EU → AF confirmada em custódia na Europa → a titular usa o valor retido (transferência e levantamento, nunca acima do retido) → África volta → saldo restante e histórico reencaminhados automaticamente → consistência OK |
 
 ```bash
 ./scripts/demo/run-all.sh                 # todos, por ordem
@@ -475,15 +487,17 @@ Alguns testes correm dentro dos contentores, porque o coordenador e o legado nã
 | Ponto de decisão = commit de `DECISAO_COMMIT` no pg-core; presumed abort | se não há decisão gravada, ninguém fez commit, por isso abortar é sempre seguro |
 | PREPARE pela ordem global EU → AM → AF (e por IBAN) | evita deadlocks distribuídos, que nenhum PostgreSQL consegue detetar sozinho |
 | `tx_id = uuid5(utilizador:Idempotency-Key)` calculado pela api | o cliente sabe o `tx_id` mesmo se o coordenador morrer, e pode repetir sem duplicar |
-| Conninfo multi-host (`target_session_attrs=read-write`) | failover transparente para os serviços, sem reconfiguração |
-| Entrypoint Postgres que volta como réplica se o par já for primário | evita split-brain quando o antigo primário regressa |
+| Conninfo multi-host (`target_session_attrs=read-write`) | a troca do primário é transparente para os serviços, sem reconfiguração |
+| Anel de cópias com supervisor em cada nó (sem contentores de réplica) | cada nó guarda a cópia de outro e assume o seu papel automaticamente; menos contentores que primário+réplica por região |
+| Replicação síncrona `remote_apply`, desligada só quando a cópia está em baixo | assumir o papel nunca perde transações confirmadas (nem PREPAREs do 2PC) |
+| Testemunhas + timeline mais recente ganha | nunca dois primários a aceitar escritas (split-brain) |
 | JWT RS256 + JWKS em cache | só o auth pode emitir; todos validam localmente, e o auth deixa de ser ponto único de falha para pedidos autenticados |
 | Ed25519 sobre JSON canónico / string canónica no XML | integridade e origem; independente da formatação do JSON/XML entre Python e Java |
 | AES-256-GCM com AAD = `user_id` | cifra autenticada: deteta adulteração e impede trocar valores cifrados entre utilizadores |
 | NFS-Ganesha (espaço de utilizador) | não depende de módulos do kernel do WSL2; funciona sem `privileged` |
 | Um ficheiro de auditoria por nó + um relatório partilhado com `fcntl.lockf` | logs sem conflitos de escrita; o relatório demonstra o acesso concorrente gerido pelo DFS |
 | Python asyncio nos serviços, virtual threads no Java | sistema dominado por I/O de rede; concorrência simples e explícita |
-| Leituras com fallback para a réplica | saldos e extratos disponíveis durante a queda de um primário, sem leituras desatualizadas quando o primário está bem |
+| Leituras com fallback para o outro sítio da base | saldos e extratos disponíveis durante a troca, sem leituras desatualizadas quando o dono está bem |
 
 ## Limitações conhecidas
 
@@ -491,10 +505,10 @@ Desenvolvidas em [`docs/relatorio/10-limitacoes.md`](docs/relatorio/10-limitacoe
 
 - **Coordenador 2PC é um ponto único de falha temporário**: enquanto está em baixo, as transferências distribuídas ficam bloqueadas, mas **nunca inconsistentes** (log durável + recuperação). Em produção: coordenador replicado com consenso (Raft) ou padrão Saga.
 - **O 2PC bloqueia** as contas entre o PREPARE e a decisão; a Saga trocaria isto por consistência eventual com compensações.
-- **pg-core não tem réplica** neste protótipo (poderia ter, como os shards).
 - **NFS com um único servidor** (ponto único de falha); em produção, GlusterFS/CephFS replicado. `Graceless = true` dispensa o *grace period* de recuperação de locks.
-- **Failover do Postgres manual** (`failover.sh`); em produção, Patroni + etcd. Se os dois nós de uma região caírem e o antigo primário arrancar primeiro, as escritas feitas no promovido perdem-se.
-- **Replicação assíncrona**: numa queda abrupta, as últimas transações (incluindo PREPAREs) podem não ter chegado à réplica. `docker stop` é uma paragem limpa e envia todo o WAL.
+- **Supervisor próprio em vez de Patroni + etcd**: a decisão usa testemunhas (os outros nós) em vez de um consenso distribuído. Uma partição que separe só o dono da sua cópia, com ambos a verem as testemunhas, pode levar os dois a aceitar escritas durante alguns segundos (o de timeline mais antiga perde-as quando se encontram). Em produção: Patroni com etcd/Consul.
+- **Replicação assíncrona enquanto a cópia está em baixo**: se o dono também cair nessa janela, as escritas feitas sem cópia só voltam quando ele voltar (a cópia desatualizada nunca é promovida).
+- **Um nó e o nó da sua cópia em baixo ao mesmo tempo**: essa região fica sem cópia viva (só a custódia funciona). Com três cópias por base aguentava-se a queda de dois nós.
 - Liquidação `REJEITADA` sem estorno automático; access token válido até expirar após logout; auditoria reescrevível por quem tem escrita no NFS (sem ancoragem externa).
 - **KYC simulado**; taxas de câmbio fixas; todos os "nós" numa só máquina (latência entre regiões ≈ 0, mesmo kernel cliente NFS).
 
@@ -526,7 +540,7 @@ global-scale-system/
 │   ├── certs/                  # gerado por gen-certs.sh (não versionado)
 │   └── keys/                   # gerado por gen-keys.sh (não versionado)
 ├── scripts/
-│   ├── gen-certs.sh, gen-keys.sh, seed.sh, migrate.sh, failover.sh, test.sh, deploy.sh, rbac-smoke.sh
+│   ├── gen-certs.sh, gen-keys.sh, seed.sh, migrate.sh, topologia.sh, test.sh, deploy.sh, rbac-smoke.sh
 │   └── demo/                   # 18 cenários (00–17) + run-all.sh + lib.sh + concurrency.py
 ├── tests/
 │   ├── unit/                   # lógica pura, sem Docker

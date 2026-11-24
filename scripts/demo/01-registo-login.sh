@@ -21,7 +21,7 @@ api POST /auth/login "{\"email\":\"maria.$N@demo.test\",\"password\":\"Demo#2026
 expect 403 "login recusado enquanto PENDENTE_VERIFICACAO"; show .detail
 
 step "3. Na BD, o documento de identificação está cifrado (AES-256-GCM)"
-sql "host=pg-core.global.local dbname=auth" "SELECT email, status, encode(substr(document_id_enc,1,24),'hex') AS document_id_enc FROM users WHERE id = '$EU_ID'"
+sql "host=pg-core.global.local,pg-america.global.local port=5432,5434 target_session_attrs=read-write dbname=auth" "SELECT email, status, encode(substr(document_id_enc,1,24),'hex') AS document_id_enc FROM users WHERE id = '$EU_ID'"
 pause
 
 step "4. O operador aprova o KYC dos dois clientes"
@@ -37,8 +37,8 @@ AM_IBAN=$(echo "$LAST_BODY" | jq -r .account.iban)
 pause
 
 step "5. Consulta direta a cada shard: cada conta só existe no nó da sua região"
-EU_SHARD="host=pg-europa.global.local,pg-europa-replica.global.local target_session_attrs=read-write dbname=bank"
-AM_SHARD="host=pg-america.global.local,pg-america-replica.global.local target_session_attrs=read-write dbname=bank"
+EU_SHARD="host=pg-europa.global.local,pg-america.global.local port=5432,5433 target_session_attrs=read-write dbname=bank"
+AM_SHARD="host=pg-america.global.local,pg-africa.global.local port=5432,5433 target_session_attrs=read-write dbname=bank"
 info "pg-europa:"
 sql "$EU_SHARD" "SELECT iban, currency, balance FROM accounts WHERE user_id IN ('$EU_ID','$AM_ID')"
 info "pg-america:"
@@ -47,8 +47,8 @@ in_eu=$(docker compose run --rm -T pgclient "$EU_SHARD sslmode=verify-full" -tAc
 in_am=$(docker compose run --rm -T pgclient "$AM_SHARD sslmode=verify-full" -tAc "SELECT count(*) FROM accounts WHERE iban IN ('$EU_IBAN','$AM_IBAN')" 2>/dev/null) 
 [[ "$EU_IBAN" == GS-EU-* && "$AM_IBAN" == GS-AM-* && "$in_eu" == 1 && "$in_am" == 1 ]] \
   && ok "$EU_IBAN só no pg-europa, $AM_IBAN só no pg-america" || fail "fragmentação incorreta"
-info "a réplica também a tem (replicação streaming):"
-sql "host=pg-europa-replica.global.local dbname=bank" "SELECT iban, pg_is_in_recovery() AS replica FROM accounts WHERE iban = '$EU_IBAN'"
+info "a cópia da Europa, guardada no nó pg-america (porta 5433), também a tem (replicação síncrona):"
+sql "host=pg-america.global.local port=5433 dbname=bank" "SELECT iban, pg_is_in_recovery() AS copia FROM accounts WHERE iban = '$EU_IBAN'"
 pause
 
 step "6. Login do cliente EU: JWT RS256 emitido pelo auth"

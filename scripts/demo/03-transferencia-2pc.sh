@@ -26,10 +26,10 @@ pause
 
 step "3. Os movimentos, vistos diretamente em cada Postgres"
 info "pg-europa (débito em EUR):"
-sql "host=pg-europa.global.local,pg-europa-replica.global.local target_session_attrs=read-write dbname=bank" \
+sql "host=pg-europa.global.local,pg-america.global.local port=5432,5433 target_session_attrs=read-write dbname=bank" \
   "SELECT iban, type, amount, currency, balance_after FROM movements WHERE tx_id = '$TX'"
 info "pg-america (crédito em USD, já convertido):"
-sql "host=pg-america.global.local,pg-america-replica.global.local target_session_attrs=read-write dbname=bank" \
+sql "host=pg-america.global.local,pg-africa.global.local port=5432,5433 target_session_attrs=read-write dbname=bank" \
   "SELECT iban, type, amount, currency, balance_after FROM movements WHERE tx_id = '$TX'"
 info "nenhuma transação ficou preparada (pendurada):"
 prepared_xacts

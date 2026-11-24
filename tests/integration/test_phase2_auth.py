@@ -13,7 +13,7 @@ from conftest import REPO, psql
 CA = str(REPO / "infra" / "certs" / "ca.crt")
 CLIENT_PASSWORD = "Cliente#2026"
 STAFF_PASSWORD = "Staff#2026"
-CORE_AUTH = "host=pg-core.global.local dbname=auth sslmode=verify-full"
+CORE_AUTH = "host=pg-core.global.local,pg-america.global.local port=5432,5434 target_session_attrs=read-write dbname=auth sslmode=verify-full"
 
 
 @pytest.fixture(scope="module")

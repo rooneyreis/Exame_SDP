@@ -105,7 +105,7 @@ def test_distributed_transfer_full_2pc_timeline(http, users):
 
 def test_request_is_signed_and_hash_is_logged(http, users):
     body = transfer(http, users["ana"], "GS-EU-00000001", "GS-EU-00000003", "1.00").json()
-    row = psql("host=pg-core.global.local dbname=coordinator sslmode=verify-full",
+    row = psql("host=pg-core.global.local,pg-america.global.local port=5432,5434 target_session_attrs=read-write dbname=coordinator sslmode=verify-full",
                f"SELECT length(request_signature), length(request_sha256) FROM transactions WHERE tx_id = '{body['tx_id']}'")
     assert row.stdout.strip() == "88|64"   # Ed25519 signature (64 bytes, base64) + SHA-256 hex
 
@@ -156,7 +156,7 @@ def test_participant_failure_rolls_back_the_prepared_one(http, users):
 
 
 def test_daily_limit_is_enforced_inside_the_shard(http, users):
-    eu = "host=pg-europa.global.local,pg-europa-replica.global.local target_session_attrs=read-write dbname=bank sslmode=verify-full"
+    eu = "host=pg-europa.global.local,pg-america.global.local port=5432,5433 target_session_attrs=read-write dbname=bank sslmode=verify-full"
     psql(eu, "UPDATE accounts SET daily_limit = 0.50 WHERE iban = 'GS-EU-00000003'")
     try:
         body = transfer(http, users["carla"], "GS-EU-00000003", "GS-EU-00000001", "1.00").json()

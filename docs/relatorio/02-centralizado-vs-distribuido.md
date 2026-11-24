@@ -9,8 +9,8 @@ A Global Scale Corporation tem clientes na Europa e na América e processa trans
 | Limitação | Num sistema centralizado | No sistema distribuído implementado |
 |---|---|---|
 | **Latência** | Um cliente em Maputo ou em Nova Iorque fala sempre com o mesmo datacenter. Cada pedido atravessa continentes (ida e volta transatlântica ≈ 80–150 ms, várias vezes por operação). | Dados fragmentados por região: as contas de cada cliente vivem no shard da sua região. Em produção, cada shard ficaria fisicamente perto dos seus clientes. Só as transferências entre regiões pagam o custo inter-regional (2PC). |
-| **Ponto único de falha** | Se o servidor ou a BD cair, o banco inteiro pára. | Várias redundâncias, demonstradas: 2 instâncias de api (cenário 06), réplica por shard com failover (08), validação de tokens sem o auth (07), recuperação do coordenador (10), shard isolado sem perda de dinheiro (09, 13). Uma falha numa região não pára a outra: transferências EU→EU continuam com a América em baixo. |
-| **Escalabilidade** | Só vertical (máquina maior), com um limite físico e um custo crescente. Uma BD única é o gargalo de escrita. | Horizontal: mais instâncias de api atrás do nginx (sem estado); mais shards para mais regiões ou mais clientes; leituras podem ir às réplicas. |
+| **Ponto único de falha** | Se o servidor ou a BD cair, o banco inteiro pára. | Várias redundâncias, demonstradas: 2 instâncias de api (cenário 06), cópia síncrona de cada base noutro nó, que assume o seu papel automaticamente (08), validação de tokens sem o auth (07), recuperação do coordenador (10), shard isolado sem perda de dinheiro (09, 13). Uma falha numa região não pára a outra: transferências EU→EU continuam com a América em baixo. |
+| **Escalabilidade** | Só vertical (máquina maior), com um limite físico e um custo crescente. Uma BD única é o gargalo de escrita. | Horizontal: mais instâncias de api atrás do nginx (sem estado); mais shards para mais regiões ou mais clientes; leituras podem ir às cópias. |
 | **Manutenção** | Atualizar = parar tudo. | Atualizações rolantes (parar api-1, atualizar, voltar; o nginx manda tudo para a api-2). |
 | **Soberania dos dados** | Todos os dados numa jurisdição. | Dados de clientes europeus num nó europeu (RGPD), americanos num nó americano. |
 | **Desempenho sob carga** | Toda a concorrência numa única fila de locks. | Locks repartidos por shard: transferências em regiões diferentes não competem. |
@@ -36,7 +36,7 @@ Perante uma partição de rede, o sistema escolhe **consistência** (CP) nas tra
 | Transparência | Onde |
 |---|---|
 | Localização | o cliente usa `https://localhost`, não sabe que há 2 apis nem 5 BDs; `/audit` parece local mas está no nó NFS |
-| Replicação | o cliente não sabe que existe réplica |
-| Falha | failover do nginx entre apis; conninfo multi-host nos shards |
+| Replicação | o cliente não sabe que cada base tem uma cópia noutro nó |
+| Falha | failover do nginx entre apis; a cópia assume o papel de um nó que cai, com conninfo multi-host |
 | Concorrência | 50 transferências simultâneas com resultado igual ao sequencial (cenário 11) |
-| Migração / relocalização | após failover o primário muda de IP sem mudar a configuração dos serviços |
+| Migração / relocalização | quando a cópia assume, a base passa para outro nó e outra porta sem mudar a configuração dos serviços |

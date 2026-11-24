@@ -1,78 +1,60 @@
-"""Phase 1: manual failover of a shard (America, África) and automatic rejoin of the old primary.
+"""Phase 1: automatic takeover by the copy, and return of the owner node.
 
-Full cycle, so the environment ends as it started:
-  1. stop the primary → failover.sh promotes the replica
-  2. writes work again through the same multi-host conninfo (no reconfiguration)
-  3. start the old primary → it notices the peer is primary and rejoins as replica
-  4. failback (same steps in the other direction)
+For a database of the ring (America, África), with nobody running any command:
+  1. a prepared (2PC phase 1) transaction is left on the owner node, then the node is stopped
+  2. the copy on the next node of the ring is promoted by itself (supervisor) within seconds
+  3. the prepared transaction is there (synchronous replication) and writes work through the
+     same multi-host conninfo (no reconfiguration)
+  4. the owner node is started: it re-syncs from the copy and takes its role back; the data
+     written while it was down is on it
 File name starts with "zz" so it runs after the other Phase 1 tests.
 """
 import uuid
 
 import pytest
 
-from conftest import current_primary, local_sql, node_role, psql, run, shard_conninfo, wait_until
+from conftest import LOCATIONS, current_primary, local_sql, node_role, psql, run, shard_conninfo, wait_back_home, wait_until
 
 
-def fail_over(region: str, gid: str) -> tuple[str, str]:
-    old_primary, replica = current_primary(region)
-    # A prepared (2PC phase 1) transaction left pending on the primary before it dies.
-    local_sql(old_primary, f"BEGIN; INSERT INTO replication_probe VALUES ('{gid}'); PREPARE TRANSACTION '{gid}';")
-    run(["docker", "stop", old_primary])
-    result = run(["./scripts/failover.sh", region])
-    assert f"OK: {replica} é agora o PRIMÁRIO" in result.stdout
-    return old_primary, replica
+def all_back_home() -> bool:
+    return all(node_role(*LOCATIONS[c][0]) == "primary" and node_role(*LOCATIONS[c][1]) == "replica"
+               for c in LOCATIONS)
 
 
-def write_and_read_back(region: str) -> None:
+@pytest.mark.parametrize("cluster", ["AM", "AF"])
+def test_copy_takes_over_and_owner_takes_its_role_back(cluster):
+    (home, hport), (copy, cport) = LOCATIONS[cluster]
+    assert current_primary(cluster)[0] == (home, hport)
+    gid = f"takeover-{uuid.uuid4()}"
+    local_sql(home, "CREATE TABLE IF NOT EXISTS replication_probe (marker TEXT)", hport)
+    local_sql(home, f"BEGIN; INSERT INTO replication_probe VALUES ('{gid}'); PREPARE TRANSACTION '{gid}';", hport)
+
+    run(["docker", "stop", home])
     marker = str(uuid.uuid4())
-    psql(shard_conninfo(region, "postgres"), f"INSERT INTO replication_probe VALUES ('{marker}')")
-    out = psql(shard_conninfo(region, "postgres"), f"SELECT count(*) FROM replication_probe WHERE marker = '{marker}'")
-    assert out.stdout.strip() == "1"
+    try:
+        assert wait_until(lambda: node_role(copy, cport) == "primary", timeout=40, interval=1), \
+            f"a cópia em {copy}:{cport} não assumiu o papel"
+        logs = run(["docker", "logs", copy]).stdout
+        assert "PROMOÇÃO" in logs and f"assume o papel de {cluster}" in logs
 
+        # The prepared transaction reached the copy before the owner died (synchronous replication):
+        # the coordinator can still decide it (here: roll it back so the test leaves no trace).
+        assert local_sql(copy, f"SELECT count(*) FROM pg_prepared_xacts WHERE gid = '{gid}'", cport) == "1"
+        local_sql(copy, f"ROLLBACK PREPARED '{gid}'", cport)
 
-def rejoin(node: str, new_primary: str) -> None:
-    run(["docker", "start", node])
-    assert wait_until(lambda: node_role(node) == "replica", timeout=120, interval=2), f"{node} não voltou como réplica"
-    assert wait_until(
-        lambda: local_sql(new_primary, "SELECT count(*) FROM pg_stat_replication WHERE state = 'streaming'") == "1",
-        timeout=60,
-    )
+        # Writes keep working through the services' conninfo, now served by the copy.
+        psql(shard_conninfo(cluster, "postgres"), f"INSERT INTO replication_probe VALUES ('{marker}')")
+    finally:
+        run(["docker", "start", home])
 
-
-@pytest.mark.parametrize("region", ["AM", "AF"])
-@pytest.mark.parametrize("cycle", ["failover", "failback"])
-def test_failover_cycle(region, cycle):
-    gid = f"failover-{uuid.uuid4()}"
-    old_primary, new_primary = fail_over(region, gid)
-    assert node_role(new_primary) == "primary"
-
-    # The prepared transaction was in the WAL, so it survived on the promoted replica:
-    # the coordinator can still decide it (here: roll it back, so the test leaves no trace).
-    assert local_sql(new_primary, f"SELECT count(*) FROM pg_prepared_xacts WHERE gid = '{gid}'") == "1"
-    local_sql(new_primary, f"ROLLBACK PREPARED '{gid}'")
-
-    write_and_read_back(region)
-
-    rejoin(old_primary, new_primary)
-    logs = run(["docker", "logs", old_primary]).stdout + run(["docker", "logs", old_primary]).stderr
-    assert "Este nó volta como réplica" in logs
-
-    # Data written after the failover reached the rejoined node.
-    marker = str(uuid.uuid4())
-    local_sql(new_primary, f"INSERT INTO replication_probe VALUES ('{marker}')")
-    assert wait_until(
-        lambda: local_sql(old_primary, f"SELECT count(*) FROM replication_probe WHERE marker = '{marker}'") == "1",
-        timeout=15,
-    )
-
-
-def test_failover_refuses_while_primary_is_running():
-    result = run(["./scripts/failover.sh", "EU"], check=False)
-    assert result.returncode == 1
-    assert "RECUSADO" in result.stderr
+    assert wait_back_home(cluster, timeout=180), f"{home} não retomou o papel de {cluster}"
+    # what was written while it was down is on it now
+    assert local_sql(home, f"SELECT count(*) FROM replication_probe WHERE marker = '{marker}'", hport) == "1"
+    assert "RETOMA" in run(["docker", "logs", copy]).stdout
+    # and the other databases of the stopped node (copies it keeps) are back too
+    assert wait_until(all_back_home, timeout=180, interval=3)
 
 
 def test_topology_is_back_to_original():
-    assert current_primary("AM") == ("pg-america", "pg-america-replica")
-    assert current_primary("AF") == ("pg-africa", "pg-africa-replica")
+    for cluster, (home, _) in LOCATIONS.items():
+        assert current_primary(cluster)[0] == home

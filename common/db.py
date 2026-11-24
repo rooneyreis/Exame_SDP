@@ -8,9 +8,16 @@ THE fragmentation rule of the system lives here (and only here):
 Single source of truth for the regions: the GSS_REGIONS setting (.env / docker-compose,
 default "EU,AM,AF"). Everything else (IBAN pattern, shard nodes, base currency, the
 Literal types of the request schemas) is derived from it.
+
+Where each database lives comes from common/topology.json (also read by the supervisor of
+every Postgres node): its HOME node and the node that keeps its COPY, in a ring. The copy
+takes over automatically when the home fails, so every conninfo lists both locations and
+lets libpq pick the one that accepts writes.
 """
+import json
 import os
 import re
+from pathlib import Path
 
 # Every region the system knows how to run: shard node name, base currency, display name.
 REGION_CATALOG = {
@@ -26,12 +33,26 @@ if unknown := [r for r in REGIONS if r not in REGION_CATALOG]:
 IBAN_PATTERN = rf"^GS-({'|'.join(REGIONS)})-[0-9]{{8}}$"
 IBAN_RE = re.compile(IBAN_PATTERN)
 
-# Nodes of each shard: (initial primary, initial replica). After a failover the roles
-# swap, which is why the conninfo lists both and lets libpq pick the writable one.
-SHARD_NODES = {
-    r: (f"{REGION_CATALOG[r]['node']}.global.local", f"{REGION_CATALOG[r]['node']}-replica.global.local")
-    for r in REGIONS
+TOPOLOGY = json.loads((Path(__file__).with_name("topology.json")).read_text(encoding="utf-8"))
+
+# {cluster: ((home host, port), (copy host, port))} for "CORE" (pg-core) and every region.
+CLUSTER_LOCATIONS = {
+    name: tuple((f"{host}.global.local", port) for host, port in (spec["home"], spec["copy"]))
+    for name, spec in TOPOLOGY["clusters"].items() if name == "CORE" or name in REGIONS
 }
+SHARD_NODES = {r: CLUSTER_LOCATIONS[r] for r in REGIONS}
+
+
+def locations_conninfo(cluster: str) -> str:
+    """host=a,b port=p,q for a cluster (both of its locations)."""
+    locs = CLUSTER_LOCATIONS[cluster]
+    return f"host={','.join(h for h, _ in locs)} port={','.join(str(p) for _, p in locs)}"
+
+
+def core_conninfo(dbname: str, user: str, password: str, ca_file: str) -> str:
+    """pg-core (auth + coordinator databases), wherever it currently runs."""
+    return (f"{locations_conninfo('CORE')} dbname={dbname} user={user} password={password} "
+            f"target_session_attrs=read-write sslmode=verify-full sslrootcert={ca_file} connect_timeout=3")
 
 # Currency of the accounts opened in each region (KYC default).
 REGION_CURRENCY = {r: REGION_CATALOG[r]["currency"] for r in REGIONS}
@@ -52,12 +73,11 @@ def shard_conninfo(region: str, user: str, password: str, ca_file: str, dbname: 
                    read_only: bool = False) -> str:
     """libpq multi-host conninfo.
     read_only=False: target_session_attrs=read-write -> always the current primary (writes).
-    read_only=True:  target_session_attrs=any        -> the primary if it answers, otherwise the
-                     replica: reads (balances, statements) keep working while the primary is down."""
-    primary, replica = SHARD_NODES[region]
+    read_only=True:  target_session_attrs=any        -> whichever location answers (the home or
+                     the copy): reads keep working even in the seconds before the copy takes over."""
     attrs = "any" if read_only else "read-write"
     return (
-        f"host={primary},{replica} port=5432,5432 dbname={dbname} user={user} password={password} "
+        f"{locations_conninfo(region)} dbname={dbname} user={user} password={password} "
         f"target_session_attrs={attrs} sslmode=verify-full sslrootcert={ca_file} "
         f"connect_timeout=3 application_name={user} "
         # Detect a dead peer / network partition in seconds instead of minutes:

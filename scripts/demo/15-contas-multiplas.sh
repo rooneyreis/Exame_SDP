@@ -46,7 +46,7 @@ pause
 
 step "4. A conta existe só no shard África (o cliente registou-se na Europa)"
 for node in pg-europa pg-america pg-africa; do
-  sql "host=$node.global.local,$node-replica.global.local target_session_attrs=read-write dbname=bank" \
+  sql "host=$node.global.local port=5432 dbname=bank" \
       "SELECT '$node' AS no, count(*) AS contas_do_cliente, string_agg(iban || ' ' || currency, ', ') AS contas FROM accounts WHERE user_id = '$USER_ID'"
 done
 login "$EMAIL" "Demo#2026"

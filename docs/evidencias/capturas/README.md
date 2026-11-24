@@ -12,7 +12,7 @@ Sugestão (uma captura por momento-chave, com o terminal em ecrã inteiro):
 | `05-adulteracao.png` | 05 | ataques recusados + linha adulterada detetada |
 | `06-queda-api.png` | 06 | `docker stop api-1` e todas as respostas `X-Served-By: api-2` |
 | `07-queda-auth.png` | 07 | auth parado, token continua válido, login novo falha |
-| `08-failover.png` | 08 | `failover.sh EU` e transferências a funcionar no novo primário |
+| `08-failover.png` | 08 | `docker stop pg-europa`, a cópia em pg-america:5433 a assumir (`./scripts/topologia.sh`) e transferências a funcionar |
 | `09-queda-2pc.png` | 09 | `COMMIT_PENDENTE_AM` → `RECUPERACAO_COMMIT_AM` |
 | `10-crash.png` | 10 | `RestartCount 0 → 1` e `RECUPERACAO_COMMIT_*` |
 | `11-concorrencia.png` | 11 | 50 transferências, conservação do dinheiro ✔ |

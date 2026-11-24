@@ -88,9 +88,12 @@ def test_report_counts_transfers_by_state_and_region(http, auditor):
 def test_status_shows_every_node(http, admin):
     body = http.get("/admin/status", headers=admin).json()
     assert body["all_up"], body
-    assert body["databases"]["pg-europa"]["role"] == "primário"
-    assert body["databases"]["pg-europa-replica"]["role"] == "réplica"
-    assert body["databases"]["pg-europa"]["replicas_streaming"] == 1
+    # every database in its two locations of the ring: the owner is the primary, the copy follows it
+    assert body["databases"]["EU@pg-europa:5432"]["role"] == "primário"
+    assert body["databases"]["EU@pg-america:5433"]["role"] == "cópia (standby)"
+    assert body["databases"]["EU@pg-europa:5432"]["replicas_streaming"] == 1
+    assert body["databases"]["EU@pg-europa:5432"]["synchronous"] is True
+    assert body["clusters_available"] == {"CORE": True, "EU": True, "AM": True, "AF": True}
     assert all(d["ssl"] == "on" and d["prepared_xacts"] == 0 for d in body["databases"].values())
     assert {"auth", "coordinator", "legacy-bank", "api-1", "api-2"} <= set(body["services"])
     assert body["nfs"]["up"]

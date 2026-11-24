@@ -9,7 +9,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from conftest import REPO, local_sql, psql, run, shard_conninfo, wait_until
+from conftest import REPO, local_sql, psql, run, shard_conninfo, wait_back_home, wait_until
 
 CA = str(REPO / "infra" / "certs" / "ca.crt")
 CLIENT_PASSWORD = "Cliente#2026"
@@ -183,6 +183,9 @@ def test_africa_shard_down_during_2pc_is_committed_by_recovery(http, users):
         assert "COMMIT_EU" in events(body) and "COMMIT_PENDENTE_AF" in events(body)
     finally:
         run(["docker", "start", "pg-africa"])
+    # Meanwhile the copy of África (on pg-europa) took over and the recovery committed there;
+    # pg-africa re-syncs from it and takes its role back.
+    assert wait_back_home("AF", timeout=180)
     tx_id = body["tx_id"]
     assert wait_until(lambda: http.get(f"/transfers/{tx_id}", headers=users["auditor"]).json().get("state")
                       == "CONFIRMADA", timeout=90, interval=2)
@@ -198,8 +201,9 @@ def test_africa_shard_down_during_2pc_is_committed_by_recovery(http, users):
 
 def test_status_lists_the_africa_nodes(http, users):
     dbs = http.get("/admin/status", headers=users["admin"]).json()["databases"]
-    assert dbs["pg-africa"]["up"] and dbs["pg-africa"]["role"] == "primário" and dbs["pg-africa"]["ssl"] == "on"
-    assert dbs["pg-africa-replica"]["up"] and dbs["pg-africa-replica"]["role"] == "réplica"
+    home, copy = dbs["AF@pg-africa:5432"], dbs["AF@pg-europa:5433"]
+    assert home["up"] and home["role"] == "primário" and home["ssl"] == "on" and home["location"] == "dono"
+    assert copy["up"] and copy["role"] == "cópia (standby)" and copy["location"] == "cópia"
 
 
 def test_health_reports_the_africa_shard(http):

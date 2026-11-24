@@ -1,10 +1,10 @@
 
 ══════ Cenário 17 — Região em baixo: valor em custódia noutro nó e reencaminhamento automático ══════
-(2026-11-23T22:09:46Z)
+(2026-11-24T08:44:31Z)
 
 ▶ 1. Antes: saldo da conta GS-AF-00000001 (Amina, África) e diretório de contas no pg-core
-  saldo em África: 498806.50 MZN
-  $ psql "host=pg-core.global.local dbname=coordinator" -c "SELECT iban, region, currency, status FROM account_directory WHERE iban = 'GS-AF-00000001'"
+  saldo em África: 492922.50 MZN
+  $ psql "host=pg-core.global.local,pg-america.global.local port=5432,5434 target_session_attrs=read-write dbname=coordinator" -c "SELECT iban, region, currency, status FROM account_directory WHERE iban = 'GS-AF-00000001'"
           iban      | region | currency | status 
     ----------------+--------+----------+--------
      GS-AF-00000001 | AF     | MZN      | ATIVA
@@ -12,13 +12,19 @@
     
   ✔ a conta está no diretório: pode ser validada mesmo com a região em baixo
 
-▶ 2. Derrubar África por completo (primário E réplica)
-  $ docker stop pg-africa pg-africa-replica
-  ✔ região África totalmente indisponível
+▶ 2. Derrubar África por completo: o seu nó e o nó que guarda a sua cópia (pg-europa)
+  $ docker stop pg-africa pg-europa
+  ✔ a Europa continua a funcionar: a sua cópia em pg-america:5433 assumiu o papel (19s)
+  ✔ África não tem nenhuma cópia viva: região totalmente indisponível
+    BASE   DONO                                CÓPIA                             
+    CORE   pg-core:5432           primário    pg-america:5434        cópia      
+    EU     pg-europa:5432         em baixo     pg-america:5433        primário   
+    AM     pg-america:5432        primário    pg-africa:5433         em baixo    
+    AF     pg-africa:5432         em baixo     pg-europa:5433         em baixo    
 
 ▶ 3. A Ana (Europa) transfere 10.00 EUR para GS-AF-00000001
   POST /auth/login -> HTTP 200
-  POST /transfers -> HTTP 201 (X-Served-By: api-1)
+  POST /transfers -> HTTP 201 (X-Served-By: api-2)
   ✔ transferência confirmada apesar de África estar em baixo (HTTP 201)
     {
       "state": "CONFIRMADA",
@@ -32,11 +38,11 @@
       "converted_amount": "705.00",
       "to_currency": "MZN"
     }
-    22:09:48.897  INICIADA   {"kind":"LOCAL","amount":"10.00","signer":"api-1","fx_rate":"70.50000000","converted":"705.00","approved_by":null,"to_currency":"MZN","initiated_by":"11111111-0000-4000-8000-000000000001","from_currency":"EUR","initiated_role":"cliente"}
-    22:09:48.900  DESVIO_CUSTODIA   {"debito":{"conta":"GS-EU-00000001","regiao":"EU","executado_em":"EU"},"motivo":"região totalmente indisponível (primário e réplica)","credito":{"conta":"GS-AF-00000001","regiao":"AF","executado_em":"EU"}}
-    22:09:48.922  CONFIRMADA   {"shard":"EU"}
+    08:45:19.841  INICIADA   {"kind":"LOCAL","amount":"10.00","signer":"api-2","fx_rate":"70.50000000","converted":"705.00","approved_by":null,"to_currency":"MZN","initiated_by":"11111111-0000-4000-8000-000000000001","from_currency":"EUR","initiated_role":"cliente"}
+    08:45:19.845  DESVIO_CUSTODIA   {"debito":{"conta":"GS-EU-00000001","regiao":"EU","executado_em":"EU"},"motivo":"região totalmente indisponível (primário e réplica)","credito":{"conta":"GS-AF-00000001","regiao":"AF","executado_em":"EU"}}
+    08:45:19.872  CONFIRMADA   {"shard":"EU"}
   ✔ routing=CUSTODIA: o crédito ficou em custódia no shard EU
-  $ psql "host=pg-europa.global.local,pg-europa-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT target_iban, target_region, currency, balance FROM custody_accounts WHERE target_iban = 'GS-AF-00000001'"
+  $ psql "host=pg-europa.global.local,pg-america.global.local port=5432,5433 target_session_attrs=read-write dbname=bank" -c "SELECT target_iban, target_region, currency, balance FROM custody_accounts WHERE target_iban = 'GS-AF-00000001'"
       target_iban   | target_region | currency | balance 
     ----------------+---------------+----------+---------
      GS-AF-00000001 | AF            | MZN      |  705.00
@@ -45,10 +51,10 @@
 
 ▶ 4. A Amina vê o valor retido e pode usá-lo
   POST /auth/login -> HTTP 200
-  GET /accounts -> HTTP 200 (X-Served-By: api-2)
+  GET /accounts -> HTTP 200 (X-Served-By: api-1)
   ✔ contas da Amina (HTTP 200)
     {"iban":"GS-AF-00000001","balance":"705.00","currency":"MZN","region_unavailable":true,"held_in":{"EU":"705.00"}}
-  POST /transfers -> HTTP 201 (X-Served-By: api-1)
+  POST /transfers -> HTTP 201 (X-Served-By: api-2)
   ✔ transferiu 100.00 MZN a partir do valor retido (HTTP 201)
     {
       "state": "CONFIRMADA",
@@ -57,28 +63,33 @@
       "debit_region": "EU",
       "credit_region": "EU"
     }
-  POST /transfers -> HTTP 422 (X-Served-By: api-2)
+  POST /transfers -> HTTP 422 (X-Served-By: api-1)
   ✔ não pode gastar mais do que o valor retido (HTTP 422)
     {
       "state": "ABORTADA",
       "failure_reason": "saldo insuficiente no valor retido (605.00 MZN)"
     }
-  POST /accounts/GS-AF-00000001/withdraw -> HTTP 200 (X-Served-By: api-1)
+  POST /accounts/GS-AF-00000001/withdraw -> HTTP 200 (X-Served-By: api-2)
   ✔ levantamento de 5.00 MZN ao balcão, também do valor retido (HTTP 200)
     {
       "balance": "600.00",
       "custody_region": "EU"
     }
-  GET /accounts/GS-AF-00000001/movements -> HTTP 200 (X-Served-By: api-2)
+  GET /accounts/GS-AF-00000001/movements -> HTTP 200 (X-Served-By: api-1)
   movimentos em custódia (ainda por reencaminhar):
     DEBITO  5.00 MZN  LEVANTAMENTO  via EU  contraparte -
     DEBITO  100.00 MZN  TRANSFERENCIA  via EU  contraparte GS-EU-00000001
     CREDITO  705.00 MZN  TRANSFERENCIA  via EU  contraparte GS-EU-00000001
 
 ▶ 5. África volta: o coordenador reencaminha o saldo restante e o histórico
-  $ docker start pg-africa pg-africa-replica
-  ✔ saldo em África: 498806.50 + 705.00 - 100.00 - 5.00 = 499406.50 MZN
-  $ psql "host=pg-core.global.local dbname=coordinator" -c "SELECT holder_region AS de, target_region AS para, target_iban, amount AS saldo_restante, currency, movements, state FROM custody_forwards ORDER BY created_at DESC LIMIT 1"
+  $ docker start pg-europa pg-africa
+    BASE   DONO                                CÓPIA                             
+    CORE   pg-core:5432           primário    pg-america:5434        cópia      
+    EU     pg-europa:5432         primário    pg-america:5433        cópia      
+    AM     pg-america:5432        primário    pg-africa:5433         cópia      
+    AF     pg-africa:5432         primário    pg-europa:5433         cópia      
+  ✔ saldo em África: 492922.50 + 705.00 - 100.00 - 5.00 = 493522.50 MZN
+  $ psql "host=pg-core.global.local,pg-america.global.local port=5432,5434 target_session_attrs=read-write dbname=coordinator" -c "SELECT holder_region AS de, target_region AS para, target_iban, amount AS saldo_restante, currency, movements, state FROM custody_forwards ORDER BY created_at DESC LIMIT 1"
      de | para |  target_iban   | saldo_restante | currency | movements |   state   
     ----+------+----------------+----------------+----------+-----------+-----------
      EU | AF   | GS-AF-00000001 |         600.00 | MZN      |         3 | CONCLUIDO
@@ -86,13 +97,13 @@
     
   GET /accounts/GS-AF-00000001/movements?limit=6 -> HTTP 200 (X-Served-By: api-2)
   extrato em África (os movimentos feitos em custódia aparecem com o nó onde aconteceram):
-    22:09:56  DEBITO  5.00 MZN  LEVANTAMENTO  saldo 499406.50  (feito em custódia no shard EU)
-    22:09:56  DEBITO  100.00 MZN  TRANSFERENCIA  saldo 499411.50  (feito em custódia no shard EU)
-    22:09:48  CREDITO  705.00 MZN  TRANSFERENCIA  saldo 499511.50  (feito em custódia no shard EU)
-    22:09:44  CREDITO  3525.00 MZN  TRANSFERENCIA  saldo 498806.50
-    22:09:22  DEBITO  200.00 MZN  TRANSFERENCIA  saldo 495281.50
-    22:09:20  DEBITO  6390.00 MZN  TRANSFERENCIA  saldo 495481.50
-  $ psql "host=pg-europa.global.local,pg-europa-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT target_iban, balance AS valor_retido FROM custody_accounts WHERE target_iban = 'GS-AF-00000001'"
+    08:45:21  DEBITO  5.00 MZN  LEVANTAMENTO  saldo 493522.50  (feito em custódia no shard EU)
+    08:45:21  DEBITO  100.00 MZN  TRANSFERENCIA  saldo 493527.50  (feito em custódia no shard EU)
+    08:45:19  CREDITO  705.00 MZN  TRANSFERENCIA  saldo 493627.50  (feito em custódia no shard EU)
+    08:43:53  CREDITO  70.50 MZN  TRANSFERENCIA  saldo 492922.50  (feito em custódia no shard EU)
+    08:41:29  CREDITO  3525.00 MZN  TRANSFERENCIA  saldo 492852.00
+    08:41:15  DEBITO  200.00 MZN  TRANSFERENCIA  saldo 489327.00
+  $ psql "host=pg-europa.global.local,pg-america.global.local port=5432,5433 target_session_attrs=read-write dbname=bank" -c "SELECT target_iban, balance AS valor_retido FROM custody_accounts WHERE target_iban = 'GS-AF-00000001'"
       target_iban   | valor_retido 
     ----------------+--------------
      GS-AF-00000001 |         0.00
@@ -101,15 +112,15 @@
 
 ▶ 6. Linha temporal da transferência original e consistência
   POST /auth/login -> HTTP 200
-  GET /transfers/bbdef32f-6793-588d-9b6d-909d96ff2ff0 -> HTTP 200 (X-Served-By: api-1)
-    22:09:48.897  INICIADA   {"kind":"LOCAL","amount":"10.00","signer":"api-1","fx_rate":"70.50000000","converted":"705.00","approved_by":null,"to_currency":"MZN","initiated_by":"11111111-0000-4000-8000-000000000001","from_currency":"EUR","initiated_role":"cliente"}
-    22:09:48.900  DESVIO_CUSTODIA   {"debito":{"conta":"GS-EU-00000001","regiao":"EU","executado_em":"EU"},"motivo":"região totalmente indisponível (primário e réplica)","credito":{"conta":"GS-AF-00000001","regiao":"AF","executado_em":"EU"}}
-    22:09:48.922  CONFIRMADA   {"shard":"EU"}
-    22:09:58.006  REENCAMINHADA_PARA_AF   {"de":"EU","conta":"GS-AF-00000001","reencaminhamento":"fbe15c1e-456f-4570-a5be-2719fc63e18e"}
+  GET /transfers/161d5a82-ff2c-5183-b3f1-82fd1b27dc21 -> HTTP 200 (X-Served-By: api-1)
+    08:45:19.841  INICIADA   {"kind":"LOCAL","amount":"10.00","signer":"api-2","fx_rate":"70.50000000","converted":"705.00","approved_by":null,"to_currency":"MZN","initiated_by":"11111111-0000-4000-8000-000000000001","from_currency":"EUR","initiated_role":"cliente"}
+    08:45:19.845  DESVIO_CUSTODIA   {"debito":{"conta":"GS-EU-00000001","regiao":"EU","executado_em":"EU"},"motivo":"região totalmente indisponível (primário e réplica)","credito":{"conta":"GS-AF-00000001","regiao":"AF","executado_em":"EU"}}
+    08:45:19.872  CONFIRMADA   {"shard":"EU"}
+    08:45:24.951  REENCAMINHADA_PARA_AF   {"de":"EU","conta":"GS-AF-00000001","reencaminhamento":"c5696573-9785-4069-9c3d-dd1259eee652"}
   ✔ a transferência foi reencaminhada para África
   GET /admin/consistency -> HTTP 200 (X-Served-By: api-2)
-    {"ok":true,"checked_transactions":125,"confirmed":107,"aborted":18,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[],"AF":[]},"problems":[]}
+    {"ok":true,"checked_transactions":291,"confirmed":261,"aborted":30,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[],"AF":[]},"problems":[]}
   ✔ /admin/consistency OK: sem dinheiro perdido nem duplicado
 
 ══════ Cenário 17 concluído ══════
-(2026-11-23T22:10:05Z)
+(2026-11-24T08:45:38Z)

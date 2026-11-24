@@ -17,27 +17,35 @@ def test_invalid_ibans(iban):
         region_of_iban(iban)
 
 
-def test_conninfo_lists_both_nodes_and_requires_writable_tls():
+def test_conninfo_lists_the_owner_and_the_copy_and_requires_writable_tls():
     dsn = shard_conninfo("EU", "api_svc", "pw", "/certs/ca.crt")
-    assert "host=pg-europa.global.local,pg-europa-replica.global.local" in dsn
+    # Europa lives on pg-europa and keeps its copy on pg-america (ring)
+    assert "host=pg-europa.global.local,pg-america.global.local port=5432,5433" in dsn
     assert "target_session_attrs=read-write" in dsn
     assert "sslmode=verify-full" in dsn and "sslrootcert=/certs/ca.crt" in dsn
 
 
-def test_conninfo_america():
-    assert "host=pg-america.global.local,pg-america-replica.global.local" in shard_conninfo("AM", "u", "p", "ca")
+def test_ring_of_copies():
+    assert "host=pg-america.global.local,pg-africa.global.local port=5432,5433" in shard_conninfo("AM", "u", "p", "ca")
+    assert "host=pg-africa.global.local,pg-europa.global.local port=5432,5433" in shard_conninfo("AF", "u", "p", "ca")
 
 
-def test_read_only_conninfo_accepts_the_replica():
+def test_read_only_conninfo_accepts_either_location():
     assert "target_session_attrs=any" in shard_conninfo("EU", "u", "p", "ca", read_only=True)
     assert "keepalives=1" in shard_conninfo("EU", "u", "p", "ca") and "tcp_user_timeout=8000" in shard_conninfo("EU", "u", "p", "ca")
+
+
+def test_core_conninfo_follows_pg_core_to_its_copy():
+    from common.db import core_conninfo
+    dsn = core_conninfo("auth", "u", "p", "ca")
+    assert "host=pg-core.global.local,pg-america.global.local port=5432,5434" in dsn
+    assert "target_session_attrs=read-write" in dsn and "dbname=auth" in dsn
 
 
 def test_africa_shard_nodes_and_currency():
     from common.db import REGION_CURRENCY, REGIONS, SHARD_NODES
     assert REGIONS == ("EU", "AM", "AF")
-    assert SHARD_NODES["AF"] == ("pg-africa.global.local", "pg-africa-replica.global.local")
-    assert "host=pg-africa.global.local,pg-africa-replica.global.local" in shard_conninfo("AF", "u", "p", "ca")
+    assert SHARD_NODES["AF"] == (("pg-africa.global.local", 5432), ("pg-europa.global.local", 5433))
     assert REGION_CURRENCY == {"EU": "EUR", "AM": "USD", "AF": "MZN"}
 
 

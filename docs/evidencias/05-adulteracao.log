@@ -1,6 +1,6 @@
 
 ══════ Cenário 05 — Adulteração de mensagens e de logs ══════
-(2026-11-23T22:06:39Z)
+(2026-11-24T08:37:40Z)
 
 ▶ 1. Ataques ao canal api → coordinator (executados de dentro da rede, no contentor api-1)
   o atacante tem um pedido assinado de 1.00 EUR e tenta alterá-lo ou reutilizá-lo:
@@ -11,17 +11,17 @@
     replay_antigo: HTTP 422
   ✔ todos os pedidos adulterados foram rejeitados
   evento de auditoria escrito pelo coordenador no NFS:
-    {"ts":"2026-11-23T22:06:39.377Z","event":"ADULTERACAO_DETETADA","reason":"assinante desconhecido: None"}
-    {"ts":"2026-11-23T22:06:39.383Z","event":"ADULTERACAO_DETETADA","reason":"assinante desconhecido: 'intruso'"}
+    {"ts":"2026-11-24T08:37:40.291Z","event":"ADULTERACAO_DETETADA","reason":"assinante desconhecido: None"}
+    {"ts":"2026-11-24T08:37:40.298Z","event":"ADULTERACAO_DETETADA","reason":"assinante desconhecido: 'intruso'"}
 
 ▶ 2. Validação da cadeia de hashes da auditoria (antes da adulteração)
   POST /auth/login -> HTTP 200
   GET /admin/audit -> HTTP 200 (X-Served-By: api-2)
   ✔ auditoria lida do NFS (HTTP 200)
-    api-1.log: 83 linhas, ok=true
-    api-2.log: 91 linhas, ok=true
-    auth.log: 172 linhas, ok=true
-    coordinator.log: 134 linhas, ok=true
+    api-1.log: 89 linhas, ok=true
+    api-2.log: 64 linhas, ok=true
+    auth.log: 193 linhas, ok=true
+    coordinator.log: 202 linhas, ok=true
   ✔ todas as cadeias íntegras
 
 ▶ 3. Um intruso com acesso ao NFS altera o montante de uma linha do coordinator.log
@@ -30,17 +30,17 @@
 ▶ 4. O auditor volta a validar
   GET /admin/audit -> HTTP 200 (X-Served-By: api-1)
     {
-      "lines": 134,
+      "lines": 202,
       "ok": false,
       "first_bad_line": 1,
       "reason": "hash não corresponde ao conteúdo (linha alterada)"
     }
   ✔ adulteração detetada exatamente na linha 1 do coordinator.log
-  conteúdo da linha adulterada: {"ts": "2026-11-23T21:51:00.375Z", "node": "coordinator", "event": "TRANSFERENCIA", "tx_id": "08ec9483-3292-5ca6-b117-61a48bf7f7ad", "kind": "LOCAL", "routing":…
+  conteúdo da linha adulterada: {"ts": "2026-11-24T07:38:41.913Z", "node": "coordinator", "event": "TRANSFERENCIA", "tx_id": "bc6b8d55-d3a0-5095-ad70-3641f9a53ad0", "kind": "LOCAL", "routing":…
 
 ▶ 5. Repor o byte original (para a demonstração poder ser repetida)
   GET /admin/audit -> HTTP 200 (X-Served-By: api-2)
   ✔ cadeia íntegra de novo
 
 ══════ Cenário 05 concluído ══════
-(2026-11-23T22:06:41Z)
+(2026-11-24T08:37:43Z)

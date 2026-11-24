@@ -14,9 +14,14 @@ networks:
           # so they never take the fixed IP of a service that starts later.
           ip_range: 172.28.0.192/26
 
+# PostgreSQL node: runs its own database (port 5432) and the copy of another node's database
+# (5433; pg-america also keeps the copy of pg-core on 5434). The supervisor promotes the copy
+# when the owner node fails and gives the role back when it returns (common/topology.json).
 x-postgres: &postgres
-  image: postgres:16
-  entrypoint: ["/usr/local/bin/gss-entrypoint.sh"]
+  build:
+    context: .
+    dockerfile: infra/postgres/Dockerfile
+  image: gss-postgres:16
   shm_size: 128mb
   restart: unless-stopped
   healthcheck:
@@ -43,11 +48,11 @@ volumes:
   nfs-data:
   pg-core-data:
   pg-europa-data:
-  pg-europa-replica-data:
+  pg-europa-copies:        # copy of the África database
   pg-america-data:
-  pg-america-replica-data:
+  pg-america-copies:       # copies of the Europa and pg-core databases
   pg-africa-data:
-  pg-africa-replica-data:
+  pg-africa-copies:        # copy of the América database
   legacy-data:
 
   # Distributed file system as seen by the other nodes: an NFS v4 mount of nfs:/audit.
@@ -80,7 +85,8 @@ services:
       retries: 20
     restart: unless-stopped
 
-  # ---------------- PostgreSQL ----------------
+  # ---------------- PostgreSQL (ring: EU copy on pg-america, AM copy on pg-africa,
+  #                  AF copy on pg-europa, pg-core copy on pg-america) ----------------
   pg-core:
     <<: *postgres
     container_name: pg-core
@@ -91,7 +97,6 @@ services:
     volumes:
       - pg-core-data:/var/lib/postgresql/data
       - ./infra/postgres/init/core:/docker-entrypoint-initdb.d:ro
-      - ./infra/postgres/entrypoint.sh:/usr/local/bin/gss-entrypoint.sh:ro
       - ./infra/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
       - ./infra/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
       - ./infra/certs:/certs:ro
@@ -107,13 +112,10 @@ services:
     environment:
       <<: *postgres-env
       NODE_NAME: pg-europa
-      PEER_HOST: pg-europa-replica.global.local
-      INITIAL_ROLE: primary
-      SHARD_REGION: EU
     volumes:
       - pg-europa-data:/var/lib/postgresql/data
+      - pg-europa-copies:/var/lib/postgresql/copies
       - ./infra/postgres/init/shard:/docker-entrypoint-initdb.d:ro
-      - ./infra/postgres/entrypoint.sh:/usr/local/bin/gss-entrypoint.sh:ro
       - ./infra/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
       - ./infra/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
       - ./infra/certs:/certs:ro
@@ -122,28 +124,6 @@ services:
         ipv4_address: 172.28.0.61
         aliases: [pg-europa.global.local]
 
-  pg-europa-replica:
-    <<: *postgres
-    container_name: pg-europa-replica
-    hostname: pg-europa-replica
-    environment:
-      <<: *postgres-env
-      NODE_NAME: pg-europa-replica
-      PEER_HOST: pg-europa.global.local
-      INITIAL_ROLE: replica
-      SHARD_REGION: EU
-    volumes:
-      - pg-europa-replica-data:/var/lib/postgresql/data
-      - ./infra/postgres/init/shard:/docker-entrypoint-initdb.d:ro
-      - ./infra/postgres/entrypoint.sh:/usr/local/bin/gss-entrypoint.sh:ro
-      - ./infra/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
-      - ./infra/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
-      - ./infra/certs:/certs:ro
-    networks:
-      globalnet:
-        ipv4_address: 172.28.0.62
-        aliases: [pg-europa-replica.global.local]
-
   pg-america:
     <<: *postgres
     container_name: pg-america
@@ -151,13 +131,10 @@ services:
     environment:
       <<: *postgres-env
       NODE_NAME: pg-america
-      PEER_HOST: pg-america-replica.global.local
-      INITIAL_ROLE: primary
-      SHARD_REGION: AM
     volumes:
       - pg-america-data:/var/lib/postgresql/data
+      - pg-america-copies:/var/lib/postgresql/copies
       - ./infra/postgres/init/shard:/docker-entrypoint-initdb.d:ro
-      - ./infra/postgres/entrypoint.sh:/usr/local/bin/gss-entrypoint.sh:ro
       - ./infra/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
       - ./infra/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
       - ./infra/certs:/certs:ro
@@ -166,28 +143,6 @@ services:
         ipv4_address: 172.28.0.63
         aliases: [pg-america.global.local]
 
-  pg-america-replica:
-    <<: *postgres
-    container_name: pg-america-replica
-    hostname: pg-america-replica
-    environment:
-      <<: *postgres-env
-      NODE_NAME: pg-america-replica
-      PEER_HOST: pg-america.global.local
-      INITIAL_ROLE: replica
-      SHARD_REGION: AM
-    volumes:
-      - pg-america-replica-data:/var/lib/postgresql/data
-      - ./infra/postgres/init/shard:/docker-entrypoint-initdb.d:ro
-      - ./infra/postgres/entrypoint.sh:/usr/local/bin/gss-entrypoint.sh:ro
-      - ./infra/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
-      - ./infra/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
-      - ./infra/certs:/certs:ro
-    networks:
-      globalnet:
-        ipv4_address: 172.28.0.64
-        aliases: [pg-america-replica.global.local]
-
   pg-africa:
     <<: *postgres
     container_name: pg-africa
@@ -195,13 +150,10 @@ services:
     environment:
       <<: *postgres-env
       NODE_NAME: pg-africa
-      PEER_HOST: pg-africa-replica.global.local
-      INITIAL_ROLE: primary
-      SHARD_REGION: AF
     volumes:
       - pg-africa-data:/var/lib/postgresql/data
+      - pg-africa-copies:/var/lib/postgresql/copies
       - ./infra/postgres/init/shard:/docker-entrypoint-initdb.d:ro
-      - ./infra/postgres/entrypoint.sh:/usr/local/bin/gss-entrypoint.sh:ro
       - ./infra/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
       - ./infra/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
       - ./infra/certs:/certs:ro
@@ -209,28 +161,6 @@ services:
       globalnet:
         ipv4_address: 172.28.0.65
         aliases: [pg-africa.global.local]
-
-  pg-africa-replica:
-    <<: *postgres
-    container_name: pg-africa-replica
-    hostname: pg-africa-replica
-    environment:
-      <<: *postgres-env
-      NODE_NAME: pg-africa-replica
-      PEER_HOST: pg-africa.global.local
-      INITIAL_ROLE: replica
-      SHARD_REGION: AF
-    volumes:
-      - pg-africa-replica-data:/var/lib/postgresql/data
-      - ./infra/postgres/init/shard:/docker-entrypoint-initdb.d:ro
-      - ./infra/postgres/entrypoint.sh:/usr/local/bin/gss-entrypoint.sh:ro
-      - ./infra/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
-      - ./infra/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
-      - ./infra/certs:/certs:ro
-    networks:
-      globalnet:
-        ipv4_address: 172.28.0.66
-        aliases: [pg-africa-replica.global.local]
 
   # ---------------- Application services ----------------
   auth:
@@ -241,7 +171,7 @@ services:
     hostname: auth
     environment:
       <<: *regions
-      AUTH_DB_DSN: "host=pg-core.global.local dbname=auth user=auth_svc password=${AUTH_DB_PASSWORD:-auth-pass} sslmode=verify-full sslrootcert=/certs/ca.crt"
+      AUTH_DB_DSN: "host=pg-core.global.local,pg-america.global.local port=5432,5434 target_session_attrs=read-write dbname=auth user=auth_svc password=${AUTH_DB_PASSWORD:-auth-pass} sslmode=verify-full sslrootcert=/certs/ca.crt"
       API_URLS: "https://api-1.global.local:8000,https://api-2.global.local:8000"
     volumes:
       - ./infra/certs:/certs:ro

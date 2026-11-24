@@ -1,4 +1,4 @@
-"""Phase 11: custody while a region is TOTALLY down (primary and replica).
+"""Phase 11: custody while a region is TOTALLY down (its node AND the node keeping its copy).
 
 A transfer to an África account while África is down is confirmed and the money is kept in
 custody in another active shard; the owner can use it (transfer, withdraw) up to the amount
@@ -11,13 +11,13 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from conftest import REPO, node_role, psql, run, wait_until
+from conftest import REPO, node_role, psql, run, wait_back_home, wait_until
 
 CA = str(REPO / "infra" / "certs" / "ca.crt")
 STAFF, CLIENT = "Staff#2026", "Cliente#2026"
 EU1, AF1 = "GS-EU-00000001", "GS-AF-00000001"
-CORE = "host=pg-core.global.local dbname=coordinator sslmode=verify-full"
-EU_SHARD = ("host=pg-europa.global.local,pg-europa-replica.global.local target_session_attrs=read-write "
+CORE = "host=pg-core.global.local,pg-america.global.local port=5432,5434 target_session_attrs=read-write dbname=coordinator sslmode=verify-full"
+EU_SHARD = ("host=pg-europa.global.local,pg-america.global.local port=5432,5433 target_session_attrs=read-write "
             "dbname=bank sslmode=verify-full")
 
 
@@ -43,10 +43,9 @@ def balance(http, operador, iban) -> Decimal:
 
 
 def start_africa():
-    run(["docker", "start", "pg-africa"])
-    assert wait_until(lambda: node_role("pg-africa") == "primary", timeout=90, interval=2)
-    run(["docker", "start", "pg-africa-replica"])
-    assert wait_until(lambda: node_role("pg-africa-replica") == "replica", timeout=120, interval=2)
+    """África and Europa come back; every database returns to its owner node."""
+    run(["docker", "start", "pg-europa", "pg-africa"])
+    assert all(wait_back_home(c, timeout=180) for c in ("EU", "AF", "AM"))
 
 
 def test_custody_while_africa_is_down_then_forwarded(http):
@@ -59,8 +58,11 @@ def test_custody_while_africa_is_down_then_forwarded(http):
                       timeout=60, interval=2)
     af_before = balance(http, operador, AF1)
 
-    run(["docker", "stop", "pg-africa", "pg-africa-replica"])
+    # África has no live copy (its copy lives on pg-europa); Europa is taken over by its copy
+    # on pg-america, so it can still keep the money in custody.
+    run(["docker", "stop", "pg-africa", "pg-europa"])
     try:
+        assert wait_until(lambda: node_role("pg-america", 5433) == "primary", timeout=60, interval=2)
         assert wait_until(lambda: http.get("/accounts", headers=amina).headers.get("X-Unavailable-Regions") == "AF",
                           timeout=60, interval=2)
         # 1. A transfer TO África is confirmed: the credit stays in custody in Europa.
@@ -118,18 +120,20 @@ def test_custody_while_africa_is_down_then_forwarded(http):
     assert result["ok"], result["problems"]
 
 
-def test_primary_down_with_replica_up_is_pending_not_custody(http):
-    """Only a TOTALLY down region goes to custody. With the replica up the transfer stays
-    PENDENTE (direct route, nothing moved) and is completed when the primary is back."""
+def test_node_down_is_taken_over_by_its_copy_not_custody(http):
+    """Only a TOTALLY down region goes to custody. With the África node down, its copy on
+    pg-europa takes over within seconds and the transfer goes straight to África's database."""
     ana = login(http, "ana.silva@cliente.test", CLIENT)
     run(["docker", "stop", "pg-africa"])
     try:
+        assert wait_until(lambda: node_role("pg-europa", 5433) == "primary", timeout=60, interval=2)
         r = transfer(http, ana, EU1, AF1, "1.00")
-        assert r.status_code == 202, r.text
+        assert r.status_code == 201, r.text
         tx = r.json()
-        assert tx["state"] == "PENDENTE" and tx["routing"] == "DIRETA" and tx["credit_region"] == "AF"
+        assert tx["state"] == "CONFIRMADA" and tx["routing"] == "DIRETA" and tx["credit_region"] == "AF"
     finally:
         run(["docker", "start", "pg-africa"])
-        assert wait_until(lambda: node_role("pg-africa") == "primary", timeout=90, interval=2)
-    assert wait_until(lambda: http.get(f"/transfers/{tx['tx_id']}", headers=ana).json()["state"] == "CONFIRMADA",
-                      timeout=90, interval=3)
+    assert wait_back_home("AF", timeout=180)
+    # the credit made while pg-africa was down is in África's database on its owner node
+    assert psql("host=pg-africa.global.local port=5432 dbname=bank sslmode=verify-full",
+                f"SELECT count(*) FROM movements WHERE tx_id = '{tx['tx_id']}'").stdout.strip() == "1"

@@ -1,37 +1,34 @@
 
 ══════ Cenário 14 — Região África (AF, MZN) ══════
-(2026-11-23T22:09:16Z)
+(2026-11-24T08:41:01Z)
 
-▶ 1. Três regiões, três shards: cada um com primário e réplica
-  GET /admin/status -> HTTP 200 (X-Served-By: api-2)
-    pg-core              primário  ssl=on
-    pg-europa            primário  ssl=on
-    pg-europa-replica    réplica  ssl=on
-    pg-america           primário  ssl=on
-    pg-america-replica   réplica  ssl=on
-    pg-africa            primário  ssl=on
-    pg-africa-replica    réplica  ssl=on
-  ✔ pg-africa é primário
-  ✔ pg-africa-replica é réplica em streaming
+▶ 1. Três regiões, três shards: cada um no seu nó, com a cópia no nó seguinte do anel
+    BASE   DONO                                CÓPIA                             
+    CORE   pg-core:5432           primário    pg-america:5434        cópia      
+    EU     pg-europa:5432         primário    pg-america:5433        cópia      
+    AM     pg-america:5432        primário    pg-africa:5433         cópia      
+    AF     pg-africa:5432         primário    pg-europa:5433         cópia      
+  ✔ pg-africa é o primário de África
+  ✔ a cópia de África está em pg-europa:5433, a receber em streaming
 
 ▶ 2. Registo de uma cliente em África → KYC → conta GS-AF em MZN no shard África
   POST /auth/register -> HTTP 201
   ✔ registo com região AF (HTTP 201)
-  POST /admin/users/1060f123-5fae-4a43-be65-20534a0c006a/approve-kyc -> HTTP 200
+  POST /admin/users/1ce21532-5df0-4ab0-bf67-68378f37cbbc/approve-kyc -> HTTP 200
   ✔ KYC aprovado pelo operador (HTTP 200)
     {
-      "iban": "GS-AF-00000040",
+      "iban": "GS-AF-00000140",
       "currency": "MZN",
       "region": "AF"
     }
-  ✔ conta GS-AF-00000040 aberta em MZN
-  $ psql "host=pg-africa.global.local,pg-africa-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT iban, currency, balance, inet_server_addr() AS no FROM accounts WHERE iban = 'GS-AF-00000040'"
+  ✔ conta GS-AF-00000140 aberta em MZN
+  $ psql "host=pg-africa.global.local,pg-europa.global.local port=5432,5433 target_session_attrs=read-write dbname=bank" -c "SELECT iban, currency, balance, inet_server_addr() AS no FROM accounts WHERE iban = 'GS-AF-00000140'"
           iban      | currency | balance |     no      
     ----------------+----------+---------+-------------
-     GS-AF-00000040 | MZN      |    0.00 | 172.28.0.65
+     GS-AF-00000140 | MZN      |    0.00 | 172.28.0.65
     (1 row)
     
-  $ psql "host=pg-europa.global.local,pg-europa-replica.global.local target_session_attrs=read-write dbname=bank" -c "SELECT count(*) AS contas_af_na_europa FROM accounts WHERE iban LIKE 'GS-AF-%'"
+  $ psql "host=pg-europa.global.local,pg-america.global.local port=5432,5433 target_session_attrs=read-write dbname=bank" -c "SELECT count(*) AS contas_af_na_europa FROM accounts WHERE iban LIKE 'GS-AF-%'"
      contas_af_na_europa 
     ---------------------
                        0
@@ -49,8 +46,8 @@
       "from_currency": "MZN",
       "to_currency": "MZN"
     }
-    22:09:19.393  INICIADA   {"kind":"LOCAL","amount":"1500.00","signer":"api-1","fx_rate":"1","converted":"1500.00","approved_by":null,"to_currency":"MZN","initiated_by":"33333333-0000-4000-8000-000000000001","from_currency":"MZN","initiated_role":"cliente"}
-    22:09:19.419  CONFIRMADA   {"shard":"AF"}
+    08:41:04.596  INICIADA   {"kind":"LOCAL","amount":"1500.00","signer":"api-1","fx_rate":"1","converted":"1500.00","approved_by":null,"to_currency":"MZN","initiated_by":"33333333-0000-4000-8000-000000000001","from_currency":"MZN","initiated_role":"cliente"}
+    08:41:04.627  CONFIRMADA   {"shard":"AF"}
   ✔ kind=LOCAL
 
 ▶ 4. 2PC Europa → África: 100.00 EUR → MZN
@@ -66,15 +63,15 @@
       "converted_amount": "7050.00",
       "to_currency": "MZN"
     }
-    22:09:19.761  INICIADA   {"kind":"DISTRIBUIDA","amount":"100.00","signer":"api-1","fx_rate":"70.50000000","converted":"7050.00","approved_by":null,"to_currency":"MZN","initiated_by":"11111111-0000-4000-8000-000000000001","from_currency":"EUR","initiated_role":"cliente"}
-    22:09:19.766  PREPARANDO
-    22:09:19.783  PREPARADO_EU   {"iban":"GS-EU-00000001","side":"DEBITO"}
-    22:09:19.799  PREPARADO_AF   {"iban":"GS-AF-00000002","side":"CREDITO"}
-    22:09:19.804  DECISAO_COMMIT
-    22:09:19.808  COMMIT_EU
-    22:09:19.812  COMMIT_AF
-    22:09:19.818  CONFIRMADA
-  ✔ GS-AF-00000002: 259050.00 → 266100.00 MZN (+7050.00 à taxa 70.5)
+    08:41:05.030  INICIADA   {"kind":"DISTRIBUIDA","amount":"100.00","signer":"api-1","fx_rate":"70.50000000","converted":"7050.00","approved_by":null,"to_currency":"MZN","initiated_by":"11111111-0000-4000-8000-000000000001","from_currency":"EUR","initiated_role":"cliente"}
+    08:41:05.042  PREPARANDO
+    08:41:05.068  PREPARADO_EU   {"iban":"GS-EU-00000001","side":"DEBITO"}
+    08:41:05.089  PREPARADO_AF   {"iban":"GS-AF-00000002","side":"CREDITO"}
+    08:41:05.098  DECISAO_COMMIT
+    08:41:05.105  COMMIT_EU
+    08:41:05.113  COMMIT_AF
+    08:41:05.122  CONFIRMADA
+  ✔ GS-AF-00000002: 275150.00 → 282200.00 MZN (+7050.00 à taxa 70.5)
 
 ▶ 5. 2PC África → América: a ordem global de bloqueio é EU → AM → AF
   POST /auth/login -> HTTP 200
@@ -89,14 +86,14 @@
       "converted_amount": "100.00",
       "to_currency": "USD"
     }
-    22:09:20.176  INICIADA   {"kind":"DISTRIBUIDA","amount":"6390.00","signer":"api-1","fx_rate":"0.01564945","converted":"100.00","approved_by":null,"to_currency":"USD","initiated_by":"33333333-0000-4000-8000-000000000001","from_currency":"MZN","initiated_role":"cliente"}
-    22:09:20.181  PREPARANDO
-    22:09:20.196  PREPARADO_AM   {"iban":"GS-AM-00000002","side":"CREDITO"}
-    22:09:20.214  PREPARADO_AF   {"iban":"GS-AF-00000001","side":"DEBITO"}
-    22:09:20.219  DECISAO_COMMIT
-    22:09:20.223  COMMIT_AM
-    22:09:20.228  COMMIT_AF
-    22:09:20.232  CONFIRMADA
+    08:41:05.513  INICIADA   {"kind":"DISTRIBUIDA","amount":"6390.00","signer":"api-1","fx_rate":"0.01564945","converted":"100.00","approved_by":null,"to_currency":"USD","initiated_by":"33333333-0000-4000-8000-000000000001","from_currency":"MZN","initiated_role":"cliente"}
+    08:41:05.522  PREPARANDO
+    08:41:05.544  PREPARADO_AM   {"iban":"GS-AM-00000002","side":"CREDITO"}
+    08:41:05.566  PREPARADO_AF   {"iban":"GS-AF-00000001","side":"DEBITO"}
+    08:41:05.574  DECISAO_COMMIT
+    08:41:05.581  COMMIT_AM
+    08:41:05.589  COMMIT_AF
+    08:41:05.595  CONFIRMADA
   ✔ AM preparado antes de AF, apesar de o débito ser em África: sem deadlocks distribuídos
 
 ▶ 6. O shard África vota NÃO → a Europa, já preparada, é desfeita
@@ -109,46 +106,39 @@
       "state": "ABORTADA",
       "failure_reason": "AF: falha injetada no participante AF (chaos)"
     }
-    22:09:20.725  INICIADA   {"kind":"DISTRIBUIDA","amount":"25.00","signer":"api-2","fx_rate":"70.50000000","converted":"1762.50","approved_by":null,"to_currency":"MZN","initiated_by":"11111111-0000-4000-8000-000000000001","from_currency":"EUR","initiated_role":"cliente"}
-    22:09:20.730  PREPARANDO
-    22:09:20.747  PREPARADO_EU   {"iban":"GS-EU-00000001","side":"DEBITO"}
-    22:09:20.764  VOTO_NAO_AF   {"reason":"AF: falha injetada no participante AF (chaos)"}
-    22:09:20.768  ROLLBACK_EU
-    22:09:20.772  ABORTADA   {"reason":"AF: falha injetada no participante AF (chaos)"}
+    08:41:06.093  INICIADA   {"kind":"DISTRIBUIDA","amount":"25.00","signer":"api-2","fx_rate":"70.50000000","converted":"1762.50","approved_by":null,"to_currency":"MZN","initiated_by":"11111111-0000-4000-8000-000000000001","from_currency":"EUR","initiated_role":"cliente"}
+    08:41:06.101  PREPARANDO
+    08:41:06.123  PREPARADO_EU   {"iban":"GS-EU-00000001","side":"DEBITO"}
+    08:41:06.142  VOTO_NAO_AF   {"reason":"AF: falha injetada no participante AF (chaos)"}
+    08:41:06.148  ROLLBACK_EU
+    08:41:06.156  ABORTADA   {"reason":"AF: falha injetada no participante AF (chaos)"}
   POST /admin/chaos -> HTTP 200 (X-Served-By: api-1)
   chaos no coordenador: {"pause_before_prepare":0,"pause_after_prepare":0,"crash_after_prepare":false,"crash_after_decision":false,"fail_participant":null}
-  ✔ saldo da Ana intacto: 9415.08 EUR
+  ✔ saldo da Ana intacto: 8455.29 EUR
   pg-europa: nenhuma
   pg-america: nenhuma
   pg-africa: nenhuma
 
-▶ 7. Failover do shard África
+▶ 7. O nó pg-africa cai: a cópia em pg-europa assume o papel de África sozinha
   $ docker stop pg-africa
-  ✔ primário de África parado
-  $ ./scripts/failover.sh AF
-    [failover] pg-africa: em baixo
-    [failover] pg-africa-replica: réplica
-    [failover] A promover pg-africa-replica com pg_promote()...
-    [failover] OK: pg-africa-replica é agora o PRIMÁRIO da região AF.
-    [failover] As transações preparadas que estavam no WAL continuam lá:
-    0 preparada(s) pendente(s)
-    [failover] Quando o nó antigo voltar (docker start), junta-se automaticamente como réplica.
+  ✔ pg-europa:5433 é agora o primário de África (assumiu em 8s, sem nenhum comando)
   POST /auth/login -> HTTP 200
   POST /transfers -> HTTP 201 (X-Served-By: api-1)
-  ✔ transferência AF → AF servida pelo novo primário (pg-africa-replica), sem mudar configuração (HTTP 201)
-  $ docker start pg-africa
-  ✔ pg-africa voltou sozinho como RÉPLICA (sem split-brain)
+  ✔ transferência AF → AF servida pela cópia, sem mudar configuração (HTTP 201)
 
-▶ 8. Failback: repor a topologia original
-  $ docker stop pg-africa-replica && ./scripts/failover.sh AF && docker start pg-africa-replica
-    [failover] OK: pg-africa é agora o PRIMÁRIO da região AF.
-  ✔ pg-africa é de novo o primário e pg-africa-replica a réplica
-  ✔ pg-africa-replica está healthy
+▶ 8. pg-africa volta: sincroniza-se a partir da cópia e retoma o seu papel
+  $ docker start pg-africa
+    BASE   DONO                                CÓPIA                             
+    CORE   pg-core:5432           primário    pg-america:5434        cópia      
+    EU     pg-europa:5432         primário    pg-america:5433        cópia      
+    AM     pg-america:5432        primário    pg-africa:5433         cópia      
+    AF     pg-africa:5432         primário    pg-europa:5433         cópia      
+  ✔ pg-africa é de novo o primário de África e pg-europa:5433 voltou a ser a sua cópia
 
 ▶ 9. Verificação final nos três shards
   GET /admin/consistency -> HTTP 200 (X-Served-By: api-2)
-    {"ok":true,"checked_transactions":120,"confirmed":103,"aborted":17,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[],"AF":[]},"problems":[]}
+    {"ok":true,"checked_transactions":285,"confirmed":256,"aborted":29,"in_progress":[],"prepared_xacts":{"EU":[],"AM":[],"AF":[]},"problems":[]}
   ✔ /admin/consistency OK: sem dinheiro perdido nem duplicado
 
 ══════ Cenário 14 concluído ══════
-(2026-11-23T22:09:39Z)
+(2026-11-24T08:41:25Z)

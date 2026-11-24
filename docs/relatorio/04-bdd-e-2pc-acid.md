@@ -4,9 +4,11 @@
 
 - Fragmentação **horizontal** por região: `pg-europa` guarda só IBANs `GS-EU-…`, `pg-america` só `GS-AM-…`. A regra está no esquema (`CHECK` em `infra/postgres/init/shard/01-init.sh`) e num único sítio da aplicação (`common/db.py`).
 - Porquê por região: localidade dos dados (latência baixa para os clientes da região), residência legal dos dados, escalabilidade horizontal (mais regiões = mais shards).
-- Replicação **streaming física e assíncrona** (WAL) primário → réplica, sobre TLS; réplica só de leitura (`hot_standby`).
-- Failover: `pg_promote()` + conninfo multi-host com `target_session_attrs=read-write`.
-- As transações **preparadas** são escritas no WAL: aparecem no nó promovido (`tests/integration/test_phase1_zz_failover.py`).
+- Replicação **em anel**: cada nó guarda a cópia da base de outro nó (Europa → pg-america, América → pg-africa, África → pg-europa, pg-core → pg-america). Não há contentores só de réplica.
+- Replicação **streaming física e síncrona** (`synchronous_commit = remote_apply`), sobre TLS: uma transação só é confirmada quando já está aplicada na cópia. A cópia é só de leitura (`hot_standby`) enquanto o dono está vivo.
+- **Troca automática**: o supervisor de cada nó (`infra/postgres/supervisor.py`) promove a cópia (`pg_promote()`) ~6 s depois de o dono desaparecer. Quando o dono volta, sincroniza-se (`pg_basebackup`) e a cópia devolve-lhe o papel (switchover). Os serviços usam conninfo multi-host com `target_session_attrs=read-write` e seguem a base sozinhos.
+- **Sem split-brain**: a cópia só assume se ainda vir outro nó (testemunha) e se estava em dia; um primário isolado (não vê ninguém) fica só de leitura; entre dois primários ganha a timeline mais recente.
+- As transações **preparadas** estão no WAL e, com replicação síncrona, já estão na cópia quando o `PREPARE` responde: o coordenador conclui-as no nó que assumiu (`tests/integration/test_phase1_zz_failover.py`, cenário 09).
 
 ## 2. O problema
 

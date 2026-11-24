@@ -28,7 +28,7 @@ from psycopg.rows import dict_row
 from common.audit import AuditLog
 from common.crypto import check_signed_request, load_ed25519_private, load_ed25519_public, load_trusted_signers
 from common import custody, limits
-from common.db import REGIONS, make_pool, region_of_iban, shard_conninfo
+from common.db import REGIONS, core_conninfo, make_pool, region_of_iban, shard_conninfo
 from common.logging import add_request_logging, log_extra, setup_logging, tx_id_var
 from common.reports import record as record_report
 
@@ -39,9 +39,7 @@ log = setup_logging("coordinator")
 audit = AuditLog("coordinator")
 TRUSTED = load_trusted_signers(settings.public_keys_dir, list(settings.trusted_signers))
 
-core = make_pool(
-    f"host=pg-core.global.local dbname=coordinator user={settings.db_user} password={settings.db_password} "
-    f"sslmode=verify-full sslrootcert={settings.ca_file} connect_timeout=3", max_size=20)
+core = make_pool(core_conninfo("coordinator", settings.db_user, settings.db_password, settings.ca_file), max_size=20)
 SHARD_DSN = {r: shard_conninfo(r, settings.db_user, settings.db_password, settings.ca_file) for r in REGIONS}
 # Read-only (validate the accounts before starting): the primary or, if it is down, the replica.
 # So a transfer enters the log and stays PENDENTE instead of being refused.

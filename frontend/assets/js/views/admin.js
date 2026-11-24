@@ -13,11 +13,7 @@ const SERVICE_INFO = {
   "legacy-bank": ["bank", "Banco correspondente", "Liquidação (XML)"], "api-1": ["server", "API · nó 1", "Pedidos de clientes"],
   "api-2": ["server", "API · nó 2", "Pedidos de clientes"],
 };
-const DB_INFO = {
-  "pg-core": "Identidades e registo de transações", "pg-europa": "Contas Europa", "pg-europa-replica": "Contas Europa (réplica)",
-  "pg-america": "Contas América", "pg-america-replica": "Contas América (réplica)",
-  "pg-africa": "Contas África", "pg-africa-replica": "Contas África (réplica)",
-};
+const DB_INFO = { CORE: "Identidades e registo de transações", EU: "Contas Europa", AM: "Contas América", AF: "Contas África" };
 
 async function infra({ root }) {
   async function draw() {
@@ -37,10 +33,10 @@ async function infra({ root }) {
         <section class="card card-pad"><h3>Bases de dados</h3><div class="stack" style="gap:10px;margin-top:14px">
           ${Object.entries(s.databases).map(([n, v]) => `
             <div class="node"><span class="pulse ${v.up ? "" : "down"}"></span><span class="tx-icon">${icon("database")}</span>
-              <span class="grow"><b>${esc(DB_INFO[n] || n)}</b><div class="sub mono">${esc(n)}</div></span>
+              <span class="grow"><b>${esc(DB_INFO[v.cluster] || n)} · ${esc(v.location)}</b><div class="sub mono">${esc(v.node)}:${esc(v.port)}</div></span>
               ${v.up ? `<span class="chip ${v.role === "primário" ? "chip-accent" : ""}">${esc(v.role)}</span>` : `<span class="chip status-failed">em baixo</span>`}</div>`).join("")}
         </div>
-        <p class="hint" style="margin-top:12px">${icon("lock")} Todas as ligações às bases de dados exigem TLS com verificação do certificado.</p></section>
+        <p class="hint" style="margin-top:12px">${icon("lock")} Todas as ligações às bases de dados exigem TLS com verificação do certificado. Cada base tem uma cópia noutro nó: se o nó dono cair, a cópia assume o seu papel em segundos e devolve-o quando ele voltar.</p></section>
       </div>
       <section class="card card-pad" style="margin-top:20px">
         <div class="row between wrap"><div><h3>Simulação de falhas</h3><p class="hint">Para demonstração: provoca falhas controladas no coordenador. Desliga-se sozinho se o coordenador reiniciar.</p></div>
